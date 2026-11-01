@@ -1,0 +1,7 @@
+{
+  "name": "minigames-hub",
+  "version": "1.0.0",
+  "description": "Minigames Hub: minigames site with accounts, friends and chat",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}
