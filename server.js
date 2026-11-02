@@ -7,17 +7,57 @@ const DIR = process.env.DATA_DIR || __dirname;
 const FILE = path.join(DIR, 'data.json');
 const OWNER = (process.env.OWNER_NAME || '').trim().toLowerCase();
 
-let db = { users: {}, tokens: {}, chats: {}, mid: 0 };
-try { db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8'))); } catch (e) {}
-let dirty = false;
-const save = () => { dirty = true; };
-const flush = () => {
-  if (!dirty) return; dirty = false;
-  try { fs.writeFileSync(FILE + '.tmp', JSON.stringify(db)); fs.renameSync(FILE + '.tmp', FILE); }
-  catch (e) { console.error('Could not save data:', e.message); }
+const RURL = (process.env.UPSTASH_REDIS_REST_URL || '').trim().replace(/\/$/, '');
+const RTOK = (process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+const REMOTE = !!(RURL && RTOK);   // true = save to Upstash Redis, so accounts survive restarts
+const KEY = 'minigames-hub-db';
+const rcmd = async cmd => {
+  const r = await fetch(RURL, { method: 'POST', headers: { Authorization: 'Bearer ' + RTOK, 'Content-Type': 'application/json' }, body: JSON.stringify(cmd) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok || j.error) throw new Error(j.error || 'HTTP ' + r.status);
+  return j.result;
 };
-setInterval(flush, 2000);
-['SIGTERM', 'SIGINT'].forEach(s => process.on(s, () => { flush(); process.exit(0); }));
+
+let db = { users: {}, tokens: {}, chats: {}, mid: 0 };
+async function init() {
+  if (REMOTE) {
+    // If this fails we stop on purpose, so we never overwrite saved data with an empty copy.
+    const v = await rcmd(['GET', KEY]);
+    if (v) db = Object.assign(db, JSON.parse(v));
+    console.log('Saving to Upstash Redis: accounts survive restarts.');
+  } else {
+    try { db = Object.assign(db, JSON.parse(fs.readFileSync(FILE, 'utf8'))); } catch (e) {}
+    console.log('Saving to a local file. If your host wipes files on restart, accounts will be lost.');
+  }
+}
+let dirty = false, saving = false;
+const save = () => { dirty = true; };
+function trim() {   // keeps the saved copy under 1 MB
+  const keys = Object.keys(db.tokens);
+  if (keys.length > 3000) keys.slice(0, keys.length - 3000).forEach(k => delete db.tokens[k]);
+  let s = JSON.stringify(db);
+  for (const keep of [300, 150, 60, 20]) {
+    if (s.length < 900000) break;
+    for (const k in db.chats) db.chats[k] = db.chats[k].slice(-keep);
+    s = JSON.stringify(db);
+  }
+  return s;
+}
+async function flush() {
+  if (!dirty || saving) return;
+  dirty = false; saving = true;
+  try {
+    const s = trim();
+    if (REMOTE) await rcmd(['SET', KEY, s]);
+    else { fs.writeFileSync(FILE + '.tmp', s); fs.renameSync(FILE + '.tmp', FILE); }
+  } catch (e) { dirty = true; console.error('Could not save data:', e.message); }
+  saving = false;
+}
+setInterval(flush, +process.env.SAVE_EVERY_MS || (REMOTE ? 10000 : 2000));
+['SIGTERM', 'SIGINT'].forEach(sg => process.on(sg, async () => {
+  await Promise.race([flush(), new Promise(r => setTimeout(r, 4000))]);
+  process.exit(0);
+}));
 
 const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(p, s, 32, (e, k) => e ? no(e) : ok(k.toString('hex'))));
 const byName = n => Object.values(db.users).find(u => u.name.toLowerCase() === String(n || '').trim().toLowerCase());
@@ -27,7 +67,7 @@ const me = u => ({ name: u.name, bio: u.bio, best: u.best, owner: isOwner(u) });
 const total = u => Object.values(u.best).reduce((a, b) => a + b, 0);
 const pair = (a, b) => [a, b].sort().join('|');
 
-const hits = {}, lastMsg = new Map();
+const hits = {}, lastMsg = new Map(), mail = new Map();
 const limited = ip => {
   const now = Date.now();
   const h = hits[ip] = (hits[ip] && hits[ip].r > now) ? hits[ip] : { n: 0, r: now + 60000 };
@@ -42,7 +82,7 @@ const send = (res, code, obj) => {
 };
 const body = req => new Promise((ok, no) => {
   let s = '';
-  req.on('data', c => { s += c; if (s.length > 10000) { no(new E(400, 'Request too big')); req.destroy(); } });
+  req.on('data', c => { s += c; if (s.length > 20000) { no(new E(400, 'Request too big')); req.destroy(); } });
   req.on('end', () => { try { ok(s ? JSON.parse(s) : {}); } catch (e) { no(new E(400, 'Bad request')); } });
 });
 
@@ -137,14 +177,34 @@ async function route(req, res, url) {
     }
     return send(res, 200, { msgs: th.slice(-100).map(x => ({ id: x.id, mine: x.f === u.id, t: x.t, ts: x.ts })) });
   }
+  if (p === '/api/call/send') {
+    const t = byName(b.to);
+    if (!t || !u.friends.includes(t.id) || !t.friends.includes(u.id)) throw new E(403, 'You can call once you both add each other.');
+    const type = String(b.type || '');
+    if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) throw new E(400, 'Bad call message');
+    if (JSON.stringify(b.data === undefined ? null : b.data).length > 12000) throw new E(400, 'Call message too big');
+    const box = mail.get(t.id) || [];
+    box.push({ from: u.name, type, data: b.data === undefined ? null : b.data, ts: Date.now() });
+    mail.set(t.id, box.slice(-100));
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/api/call/poll') {
+    const now = Date.now(), box = (mail.get(u.id) || []).filter(x => now - x.ts < 60000);
+    mail.delete(u.id);
+    return send(res, 200, { signals: box });
+  }
   throw new E(404, 'Not found');
 }
 
-http.createServer(async (req, res) => {
+const server = http.createServer(async (req, res) => {
   try { await route(req, res, new URL(req.url, 'http://x')); }
   catch (e) {
     const c = e.c || 500;
     if (c === 500) console.error(e);
     if (!res.headersSent) send(res, c, { error: c === 500 ? 'Server error' : e.message });
   }
-}).listen(PORT, () => console.log('Minigames Hub is running on port ' + PORT));
+});
+
+init()
+  .then(() => server.listen(PORT, () => console.log('Minigames Hub is running on port ' + PORT)))
+  .catch(e => { console.error('Could not load saved data, so the server did not start:', e.message); process.exit(1); });
