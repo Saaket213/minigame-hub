@@ -2,6 +2,13 @@
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Minigames Hub</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#5b5bf0">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Minigames Hub">
 <style>
 :root{--bg:#f4f1ea;--card:#fff;--ink:#1d1d22;--mut:#6b6b76;--acc:#5b5bf0;--hot:#ff5d5d;--line:#ddd8cc;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){color-scheme:dark;--bg:#15151b;--card:#202029;--ink:#f1f1f5;--mut:#9a9aa8;--acc:#8b8bff;--line:#34343f}}
@@ -742,6 +749,7 @@ if(user&&user.name)showHub();else view('login');
 const ping=await fetch('/api/ping').then(r=>r.ok?r.json():null).catch(()=>null);
 if(!ping||!ping.ok)return;
 let tok=null;try{tok=localStorage.getItem('mg_tok')}catch(e){}
+if('serviceWorker'in navigator)navigator.serviceWorker.register('/sw.js').catch(()=>{});
 const api=async(p,body)=>{
   const r=await fetch('/api/'+p,{method:body?'POST':'GET',headers:Object.assign({'Content-Type':'application/json'},tok?{Authorization:'Bearer '+tok}:{}),body:body?JSON.stringify(body):undefined});
   const j=await r.json().catch(()=>({}));
@@ -766,12 +774,12 @@ authGo=async function(){
   try{
     const j=await api(mode==='up'?'signup':'login',{name:$('#un').value.trim(),password:$('#pw').value,bio:$('#bio').value.trim()});
     tok=j.token;try{localStorage.setItem('mg_tok',tok)}catch(e){}
-    applyMe(j.me);$('#pw').value='';er.textContent='';showHub();
+    applyMe(j.me);$('#pw').value='';er.textContent='';showHub();syncPush();
   }catch(e){er.textContent=e.message}
 };
 $('#go').onclick=authGo;
 $('#pw').onkeydown=e=>{if(e.key==='Enter')authGo()};
-$('#out').onclick=()=>{if(state!=='idle')endCall(null,true);lost();setBadge(0);user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
+$('#out').onclick=()=>{unsubOnLogout(tok);if(state!=='idle')endCall(null,true);lost();setBadge(0);user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
 
 /* bio (saved to the server a moment after typing stops) */
 const rs=renderSet;
@@ -870,10 +878,31 @@ function ui(title,stat,btns){
   btns.forEach(([t,f,g])=>{const x=mk('button',g?'ghost':null,t);if(g){x.style.color='#fff';x.style.borderColor='rgba(255,255,255,.35)'}x.onclick=f;b.appendChild(x)});
   cbx.classList.remove('hidden');
 }
-function ring(on){
-  clearInterval(ringIv);if(!on)return;
-  const beep=()=>{try{const a=ring.ctx||(ring.ctx=new(window.AudioContext||window.webkitAudioContext)());const o=a.createOscillator(),g=a.createGain();o.frequency.value=480;g.gain.value=.08;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.35)}catch(e){}};
-  beep();ringIv=setInterval(beep,1600);
+const baseTitle=document.title;let titleIv=null,vibIv=null;
+const vol=()=>{try{const v=parseFloat(localStorage.getItem('mg_ringvol'));return isNaN(v)?0.7:v}catch(e){return .7}};
+const actx=()=>{try{const a=ring.ctx||(ring.ctx=new(window.AudioContext||window.webkitAudioContext)());if(a.state==='suspended')a.resume();return a}catch(e){return null}};
+['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev,()=>actx(),{once:true,passive:true}));
+function tone(a,freq,t,dur,type,gain){
+  const os=a.createOscillator(),g=a.createGain();os.type=type;os.frequency.value=freq;
+  g.gain.setValueAtTime(0.0001,t);g.gain.exponentialRampToValueAtTime(Math.max(gain,0.0002),t+.01);
+  g.gain.setValueAtTime(Math.max(gain,0.0002),t+dur-.02);g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  os.connect(g);g.connect(a.destination);os.start(t);os.stop(t+dur+.02);
+}
+function ringBurst(mode){   // 'in' = loud phone ring, 'out' = soft ringback tone for the caller
+  const a=actx();if(!a)return;const t=a.currentTime+.02,v=vol();
+  if(mode==='out'){tone(a,425,t,1,'sine',.08*v);return}
+  for(let g=0;g<2;g++)for(let i=0;i<8;i++)tone(a,i%2?784:988,t+g*1.1+i*.1,.09,'square',.22*v);
+}
+function ring(on,mode,who){
+  clearInterval(ringIv);clearInterval(titleIv);clearInterval(vibIv);document.title=baseTitle;
+  if(!on){if(navigator.vibrate)try{navigator.vibrate(0)}catch(e){}return}
+  const inc=mode!=='out';
+  ringBurst(mode);ringIv=setInterval(()=>ringBurst(mode),inc?3000:3500);
+  if(inc){
+    const buzz=()=>{if(navigator.vibrate)try{navigator.vibrate([600,250,600,250,600])}catch(e){}};
+    buzz();vibIv=setInterval(buzz,3000);
+    let flip=false;titleIv=setInterval(()=>{flip=!flip;document.title=flip?'📞 '+(who||'Someone')+' is calling…':baseTitle},900);
+  }
 }
 function endCall(msg,notify){
   if(notify&&peer)sig('hangup');
@@ -915,7 +944,7 @@ async function startCall(name){
   peer=name;state='calling';
   ui('📞 Calling '+name+'…','Waiting for them to answer',[['Cancel',()=>endCall('Call cancelled.',true),1]]);
   try{await makePC()}catch(e){endCall('Allow the microphone to make calls.',false);return}
-  try{const o=await pc.createOffer();await pc.setLocalDescription(o);sig('offer',{type:o.type,sdp:o.sdp})}catch(e){endCall('Couldn’t start the call.',false);return}
+  try{const o=await pc.createOffer();await pc.setLocalDescription(o);sig('offer',{type:o.type,sdp:o.sdp});ring(true,'out')}catch(e){endCall('Couldn’t start the call.',false);return}
   ringTO=setTimeout(()=>{if(state==='calling')endCall('No answer.',true)},45000);
 }
 async function accept(){
@@ -931,7 +960,7 @@ async function onSignal(s){
     if(state!=='idle'){api('call/send',{to:s.from,type:'decline',data:'busy'}).catch(()=>{});return}
     peer=s.from;state='ringing';pend=s.data;
     ui('📞 '+s.from+' is calling you','Incoming voice call',[['Accept',accept],['Decline',()=>{sig('decline');endCall(null)},1]]);
-    ring(true);ringTO=setTimeout(()=>{if(state==='ringing')endCall('Missed call from '+peer+'.',false)},45000);
+    ring(true,'in',s.from);ringTO=setTimeout(()=>{if(state==='ringing')endCall('Missed call from '+peer+'.',false)},45000);
     return;
   }
   if(s.from!==peer)return;
@@ -969,8 +998,79 @@ const pollLoop=async()=>{if(tok&&(!document.hidden||state!=='idle'))await pollCa
 pollLoop();
 const cbar=document.querySelector('#chat .bar'),cb2=mk('button','ghost','📞 Call');cb2.onclick=()=>startCall(cName);cbar.appendChild(cb2);
 
+/* ---------- installable app + call alerts + ringtone settings ---------- */
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&tok)pollCalls()});
+const b64d=s=>{const r=atob((s+'='.repeat((4-s.length%4)%4)).replace(/-/g,'+').replace(/_/g,'/'));return Uint8Array.from(r,c=>c.charCodeAt(0))};
+const b64e=buf=>btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const alertsOK=()=>'serviceWorker'in navigator&&'PushManager'in window&&'Notification'in window;
+async function ensureSub(ask){
+  if(!tok)throw new Error('Sign in with an account first.');
+  if(!alertsOK())throw new Error('This browser can’t show alerts.');
+  if(Notification.permission!=='granted'){
+    if(!ask)return null;
+    if(await Notification.requestPermission()!=='granted')throw new Error('Alerts are blocked. Allow notifications for this site in your browser settings.');
+  }
+  const reg=await navigator.serviceWorker.ready,{key}=await api('push/key');
+  let sub=await reg.pushManager.getSubscription();
+  if(sub&&sub.options&&sub.options.applicationServerKey&&b64e(sub.options.applicationServerKey)!==key){await sub.unsubscribe();sub=null}
+  if(!sub)sub=await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64d(key)});
+  await api('push/subscribe',{sub:sub.toJSON()});
+  return sub;
+}
+function syncPush(){ensureSub(false).catch(()=>{})}
+async function disablePush(){
+  const reg=await navigator.serviceWorker.getRegistration(),sub=reg&&await reg.pushManager.getSubscription();
+  if(sub){try{await api('push/unsubscribe',{endpoint:sub.endpoint})}catch(e){}await sub.unsubscribe()}
+}
+async function unsubOnLogout(t){
+  try{const reg=await navigator.serviceWorker.getRegistration(),sub=reg&&await reg.pushManager.getSubscription();
+    if(sub&&t)await fetch('/api/push/unsubscribe',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+t},body:JSON.stringify({endpoint:sub.endpoint})})}catch(e){}
+}
+const card=document.querySelector('#settings .card');
+const sec=l=>{card.appendChild(mk('label',null,l));const d=mk('div','pad');d.style.justifyContent='flex-start';card.appendChild(d);return d};
+const hint=()=>{const p=mk('p',null,'');p.style.cssText='font-size:13px;color:var(--mut);margin:6px 0 0';card.appendChild(p);return p};
+const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent),standalone=matchMedia('(display-mode: standalone)').matches||navigator.standalone;
+
+const vd=sec('Ringtone volume');
+const vr=mk('input');vr.type='range';vr.min=0;vr.max=100;vr.value=Math.round(vol()*100);vr.style.cssText='flex:1;min-width:140px;padding:0';
+vr.oninput=()=>{try{localStorage.setItem('mg_ringvol',String(vr.value/100))}catch(e){}};
+const tb=mk('button',null,'🔔 Test ringtone');
+tb.onclick=()=>{actx();ringBurst('in');if(navigator.vibrate)try{navigator.vibrate([300,150,300])}catch(e){}};
+vd.append(vr,tb);
+
+const ad=sec('Call alerts (works when the app is closed)');
+const ab=mk('button',null,'🔔 Turn on alerts'),ast=hint();ad.appendChild(ab);
+async function refreshAlerts(){
+  if(!alertsOK()){ab.disabled=true;ast.textContent=isIOS&&!standalone?'On iPhone or iPad, first add the app to your Home Screen (Share, then Add to Home Screen) and open it from there.':'This browser can’t show alerts.';return}
+  const reg=await navigator.serviceWorker.getRegistration(),sub=reg&&await reg.pushManager.getSubscription(),on=!!sub&&Notification.permission==='granted';
+  ab.textContent=on?'🔕 Turn off alerts':'🔔 Turn on alerts';
+  ast.textContent=Notification.permission==='denied'?'Alerts are blocked. Allow notifications for this site in your browser settings.':on?'Alerts are on for this device: calls, missed calls, messages and friend requests.':'Alerts are off. Turn them on to get a ring notification even when the app is closed or the screen is off.';
+}
+ab.onclick=async()=>{
+  ab.disabled=true;
+  try{const reg=await navigator.serviceWorker.getRegistration(),sub=reg&&await reg.pushManager.getSubscription();
+    if(sub&&Notification.permission==='granted')await disablePush();else await ensureSub(true)}
+  catch(e){ast.textContent=e.message;ab.disabled=false;return}
+  ab.disabled=false;refreshAlerts();
+};
+const sb2=$('#setb');const prevSet=sb2.onclick;sb2.onclick=()=>{prevSet();refreshAlerts()};
+
+let deferred=null;
+const idv=sec('Install the app'),ib=mk('button',null,'📲 Install Minigames Hub'),ist=hint();idv.appendChild(ib);
+const hb=mk('button','ghost','📲 Install app');hb.classList.add('hidden');frb.parentNode.insertBefore(hb,frb);
+function showInstall(){
+  if(standalone){ib.classList.add('hidden');hb.classList.add('hidden');ist.textContent='✅ You’re using the installed app.';return}
+  ib.classList.toggle('hidden',!deferred);hb.classList.toggle('hidden',!deferred);
+  ist.textContent=deferred?'Adds Minigames Hub to your home screen or desktop with its own icon.':isIOS?'On iPhone or iPad: tap the Share button, then “Add to Home Screen”.':'No install button? Open your browser’s menu and look for “Install app” or “Add to Home screen”.';
+}
+const doInstall=async()=>{if(!deferred)return;deferred.prompt();await deferred.userChoice.catch(()=>{});deferred=null;showInstall()};
+ib.onclick=doInstall;hb.onclick=doInstall;
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferred=e;showInstall()});
+window.addEventListener('appinstalled',()=>{deferred=null;showInstall()});
+showInstall();
+
 /* restore a saved sign-in */
-if(tok){try{const j=await api('me');applyMe(j.me);showHub()}catch(e){lost()}}
+if(tok){try{const j=await api('me');applyMe(j.me);showHub();syncPush()}catch(e){lost()}}
 })();
 </script>
 </body></html>
