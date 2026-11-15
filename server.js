@@ -20,6 +20,15 @@ const rcmd = async cmd => {
 
 let db = { users: {}, tokens: {}, chats: {}, mid: 0 };
 async function init() {
+  await loadDb();
+  if (!db.vapid) {   // keys that let the server send "incoming call" alerts to phones and laptops
+    const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const j = publicKey.export({ format: 'jwk' });
+    db.vapid = { priv: privateKey.export({ type: 'pkcs8', format: 'pem' }), pub: b64u(Buffer.concat([Buffer.from([4]), unb64u(j.x), unb64u(j.y)])) };
+    save();
+  }
+}
+async function loadDb() {
   if (REMOTE) {
     // If this fails we stop on purpose, so we never overwrite saved data with an empty copy.
     const v = await rcmd(['GET', KEY]);
@@ -77,6 +86,51 @@ const limited = ip => {
 };
 setInterval(() => { const n = Date.now(); for (const k in hits) if (hits[k].r < n) delete hits[k]; }, 60000);
 
+// <push-crypto>
+const b64u = b => Buffer.from(b).toString('base64url');
+const unb64u = x => Buffer.from(String(x), 'base64url');
+// Web Push message encryption (RFC 8291, aes128gcm). "test" lets a test fix the random parts.
+function encryptPush(sub, text, test) {
+  const uaPub = unb64u(sub.p256dh), auth = unb64u(sub.auth);
+  const ecdh = crypto.createECDH('prime256v1');
+  if (test && test.priv) ecdh.setPrivateKey(test.priv); else ecdh.generateKeys();
+  const asPub = ecdh.getPublicKey();
+  const secret = ecdh.computeSecret(uaPub);
+  const salt = (test && test.salt) || crypto.randomBytes(16);
+  const ikm = Buffer.from(crypto.hkdfSync('sha256', secret, auth, Buffer.concat([Buffer.from('WebPush: info\0'), uaPub, asPub]), 32));
+  const cek = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: aes128gcm\0'), 16));
+  const nonce = Buffer.from(crypto.hkdfSync('sha256', ikm, salt, Buffer.from('Content-Encoding: nonce\0'), 12));
+  const c = crypto.createCipheriv('aes-128-gcm', cek, nonce);
+  const enc = Buffer.concat([c.update(Buffer.concat([Buffer.from(text), Buffer.from([2])])), c.final(), c.getAuthTag()]);
+  const hdr = Buffer.alloc(21); salt.copy(hdr, 0); hdr.writeUInt32BE(4096, 16); hdr[20] = 65;
+  return Buffer.concat([hdr, asPub, enc]);
+}
+// </push-crypto>
+const VAPID_SUBJECT = process.env.VAPID_SUBJECT || 'mailto:admin@minigames-hub.example';
+const PUSH_HOSTS = ['.googleapis.com', '.mozilla.com', '.push.apple.com', '.windows.com'];   // only real push services
+function vapidHeader(endpoint) {
+  const h = b64u(JSON.stringify({ typ: 'JWT', alg: 'ES256' }));
+  const p = b64u(JSON.stringify({ aud: new URL(endpoint).origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: VAPID_SUBJECT }));
+  const sig = crypto.sign('sha256', Buffer.from(h + '.' + p), { key: crypto.createPrivateKey(db.vapid.priv), dsaEncoding: 'ieee-p1363' });
+  return 'vapid t=' + h + '.' + p + '.' + b64u(sig) + ', k=' + db.vapid.pub;
+}
+async function pushTo(t, msg) {   // fire and forget: a failed alert never breaks the app
+  if (!t || !t.subs || !t.subs.length) return;
+  const body = JSON.stringify(msg);
+  await Promise.all(t.subs.map(async sub => {
+    try {
+      const r = await fetch(sub.endpoint, {
+        method: 'POST',
+        headers: { Authorization: vapidHeader(sub.endpoint), 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', TTL: String(msg.call ? 45 : 3600), Urgency: msg.call ? 'high' : 'normal' },
+        body: encryptPush(sub, body), signal: AbortSignal.timeout(8000)
+      });
+      if (r.status === 404 || r.status === 410) { t.subs = t.subs.filter(x => x.endpoint !== sub.endpoint); save(); }
+      else if (!r.ok) console.error('Push failed:', r.status);
+    } catch (e) { console.error('Push error:', e.message); }
+  }));
+}
+const ringing = new Map();   // callee id -> who is ringing them (to send a "missed call" alert)
+
 class E extends Error { constructor(c, m) { super(m); this.c = c; } }
 const send = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
@@ -90,6 +144,17 @@ const body = req => new Promise((ok, no) => {
 
 async function route(req, res, url) {
   const p = url.pathname, m = req.method;
+  const FILES = {
+    '/manifest.webmanifest': ['manifest.webmanifest', 'application/manifest+json'],
+    '/sw.js': ['sw.js', 'application/javascript; charset=utf-8'],
+    '/icon-192.png': ['icon-192.png', 'image/png'],
+    '/icon-512.png': ['icon-512.png', 'image/png'],
+    '/apple-touch-icon.png': ['apple-touch-icon.png', 'image/png']
+  };
+  if (m === 'GET' && FILES[p]) {
+    res.writeHead(200, { 'Content-Type': FILES[p][1], 'Cache-Control': p === '/sw.js' ? 'no-cache' : 'public, max-age=86400' });
+    return res.end(fs.readFileSync(path.join(__dirname, 'public', FILES[p][0])));
+  }
   if (m === 'GET' && (p === '/' || p === '/index.html')) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fs.readFileSync(path.join(__dirname, 'public', 'index.html')));
@@ -156,6 +221,7 @@ async function route(req, res, url) {
     if (u.friends.includes(t.id)) throw new E(400, 'Already your friend.');
     if (u.friends.length >= 100) throw new E(400, 'Friend list is full.');
     u.friends.push(t.id); save();
+    if (!t.friends.includes(u.id)) pushTo(t, { title: '\uD83D\uDC4B Friend request', body: u.name + ' wants to be your friend', tag: 'req-' + u.id });
     return send(res, 200, { name: t.name, mutual: t.friends.includes(u.id) });
   }
   if (p === '/api/friends/remove') {
@@ -178,11 +244,29 @@ async function route(req, res, url) {
       if (Date.now() - (lastMsg.get(u.id) || 0) < 400) throw new E(429, 'Slow down a little.');
       lastMsg.set(u.id, Date.now());
       th.push({ id: ++db.mid, f: u.id, t: text, ts: Date.now() });
+      pushTo(t, { title: '\uD83D\uDCAC ' + u.name, body: text.slice(0, 100), tag: 'chat-' + u.id });
       if (th.length > 500) th.splice(0, th.length - 500);
       save();
       return send(res, 200, { ok: true });
     }
     return send(res, 200, { msgs: th.slice(-100).map(x => ({ id: x.id, mine: x.f === u.id, t: x.t, ts: x.ts })) });
+  }
+  if (p === '/api/push/key') return send(res, 200, { key: db.vapid.pub });
+  if (p === '/api/push/subscribe') {
+    const sb = b.sub || {}, k = sb.keys || {};
+    const ep = String(sb.endpoint || ''), p256 = String(k.p256dh || ''), au = String(k.auth || '');
+    let host = '';
+    try { host = new URL(ep).hostname; } catch (e) {}
+    if (!ep.startsWith('https://') || ep.length > 700 || !PUSH_HOSTS.some(h => host.endsWith(h))) throw new E(400, 'Unsupported alert service');
+    if (unb64u(p256).length !== 65 || unb64u(au).length < 16 || au.length > 100) throw new E(400, 'Bad subscription');
+    Object.values(db.users).forEach(x => { if (x.subs) x.subs = x.subs.filter(y => y.endpoint !== ep); });   // one device, one account
+    u.subs = (u.subs || []).concat([{ endpoint: ep, p256dh: p256, auth: au }]).slice(-5);
+    save();
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/api/push/unsubscribe') {
+    u.subs = (u.subs || []).filter(y => y.endpoint !== String(b.endpoint || '')); save();
+    return send(res, 200, { ok: true });
   }
   if (p === '/api/call/send') {
     const t = byName(b.to);
@@ -193,6 +277,17 @@ async function route(req, res, url) {
     const box = mail.get(t.id) || [];
     box.push({ from: u.name, type, data: b.data === undefined ? null : b.data, ts: Date.now() });
     mail.set(t.id, box.slice(-100));
+    if (type === 'offer') {
+      ringing.set(t.id, { from: u.id, ts: Date.now() });
+      pushTo(t, { title: '\uD83D\uDCDE ' + u.name + ' is calling you', body: 'Tap to answer', call: true, tag: 'call' });
+    } else if (type === 'answer' || type === 'decline') ringing.delete(u.id);
+    else if (type === 'hangup') {
+      const r = ringing.get(t.id);
+      if (r && r.from === u.id && Date.now() - r.ts < 60000) {
+        ringing.delete(t.id);
+        pushTo(t, { title: '\uD83D\uDCF5 Missed call', body: u.name + ' called you', tag: 'call' });
+      }
+    }
     return send(res, 200, { ok: true });
   }
   if (p === '/api/call/poll') {
