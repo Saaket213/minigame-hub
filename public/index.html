@@ -765,7 +765,7 @@ authGo=async function(){
 };
 $('#go').onclick=authGo;
 $('#pw').onkeydown=e=>{if(e.key==='Enter')authGo()};
-$('#out').onclick=()=>{lost();user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
+$('#out').onclick=()=>{if(state!=='idle')endCall(null,true);lost();user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
 
 /* bio (saved to the server a moment after typing stops) */
 const rs=renderSet;
@@ -796,7 +796,7 @@ renderF=async function(){
     if(f.owner)b.append(' ',mk('span','owner','👑 OWNER'));
     info.append(b,mk('small',null,(f.bio||'No bio')+' · Total score '+f.total+' · '+(f.mutual?'Friends ✓':'Waiting for them to add you back')));
     row.append(av,info);
-    if(f.mutual){const cb=mk('button',null,'💬 Chat');cb.onclick=()=>openChat(f.name);row.append(cb)}
+    if(f.mutual){const cb=mk('button',null,'💬 Chat');cb.onclick=()=>openChat(f.name);const cl=mk('button',null,'📞 Call');cl.onclick=()=>startCall(f.name);row.append(cb,cl)}
     const rm=mk('button','ghost','Remove');rm.onclick=async()=>{try{await api('friends/remove',{name:f.name});renderF()}catch(e){}};
     row.append(rm);box.appendChild(row);
   });
@@ -836,6 +836,95 @@ $('#csend').onclick=sendC;
 /* leaderboard: top 10 across everyone on the server */
 topList=async g=>(await api('top?game='+encodeURIComponent(g))).rows;
 $('#bnote').textContent='Top 10 players. Pick a game:';
+
+/* ---------- voice calls (WebRTC): the server only passes the setup messages ---------- */
+const cbx=mk('div','hidden');
+cbx.style.cssText='position:fixed;left:50%;transform:translateX(-50%);bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:50;width:min(92vw,380px);padding:16px;border-radius:18px;background:#1d1d2e;color:#fff;border:1px solid rgba(255,255,255,.2);box-shadow:0 12px 40px rgba(0,0,0,.4);text-align:center';
+cbx.innerHTML='<div id="ctitle" style="font-weight:800;font-size:18px"></div><div id="cstat" style="opacity:.8;margin:4px 0 12px"></div><div class="pad" id="cbtns"></div><audio id="raudio" autoplay playsinline></audio>';
+document.body.appendChild(cbx);
+let pc=null,stream=null,peer=null,state='idle',pend=null,ice=[],ringTO=null,ringIv=null,tick=null,t0=0,muted=false,sq=Promise.resolve();
+const fmt=ms=>{const s=Math.floor(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')};
+const sig=(type,data)=>{const to=peer;sq=sq.then(()=>api('call/send',{to,type,data})).catch(()=>{});return sq};
+function ui(title,stat,btns){
+  $('#ctitle').textContent=title;$('#cstat').textContent=stat;
+  const b=$('#cbtns');b.innerHTML='';
+  btns.forEach(([t,f,g])=>{const x=mk('button',g?'ghost':null,t);if(g){x.style.color='#fff';x.style.borderColor='rgba(255,255,255,.35)'}x.onclick=f;b.appendChild(x)});
+  cbx.classList.remove('hidden');
+}
+function ring(on){
+  clearInterval(ringIv);if(!on)return;
+  const beep=()=>{try{const a=ring.ctx||(ring.ctx=new(window.AudioContext||window.webkitAudioContext)());const o=a.createOscillator(),g=a.createGain();o.frequency.value=480;g.gain.value=.08;o.connect(g);g.connect(a.destination);o.start();o.stop(a.currentTime+.35)}catch(e){}};
+  beep();ringIv=setInterval(beep,1600);
+}
+function endCall(msg,notify){
+  if(notify&&peer)sig('hangup');
+  ring(false);clearTimeout(ringTO);clearInterval(tick);
+  if(pc){pc.onicecandidate=pc.ontrack=pc.onconnectionstatechange=null;try{pc.close()}catch(e){}}pc=null;
+  if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
+  $('#raudio').srcObject=null;
+  const who=peer;peer=null;state='idle';pend=null;ice=[];muted=false;
+  if(msg){ui('📞 '+(who||'Call'),msg,[['OK',()=>cbx.classList.add('hidden')]]);setTimeout(()=>{if(state==='idle')cbx.classList.add('hidden')},4000)}
+  else cbx.classList.add('hidden');
+}
+async function makePC(){
+  stream=await navigator.mediaDevices.getUserMedia({audio:true});
+  pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}]});
+  stream.getTracks().forEach(t=>pc.addTrack(t,stream));
+  pc.onicecandidate=e=>{if(e.candidate)sig('ice',e.candidate.toJSON())};
+  pc.ontrack=e=>{const a=$('#raudio');a.srcObject=e.streams[0];a.play().catch(()=>{})};
+  pc.onconnectionstatechange=()=>{
+    if(!pc)return;const s=pc.connectionState;
+    if(s==='connected'&&state!=='live')goLive();
+    else if(s==='failed')endCall('Couldn’t connect. Some networks block direct calls.',true);
+    else if(s==='disconnected')setTimeout(()=>{if(pc&&pc.connectionState==='disconnected')endCall('The call dropped.',true)},5000);
+  };
+}
+function liveBtns(){return[[muted?'🔇 Unmute':'🎙 Mute',toggleMute],['Hang up',()=>endCall('Call ended.',true),1]]}
+function goLive(){
+  state='live';ring(false);clearTimeout(ringTO);t0=Date.now();
+  ui('📞 '+peer,'In call · 0:00',liveBtns());
+  tick=setInterval(()=>{$('#cstat').textContent='In call · '+fmt(Date.now()-t0)},1000);
+}
+function toggleMute(){
+  muted=!muted;if(stream)stream.getAudioTracks().forEach(t=>t.enabled=!muted);
+  ui('📞 '+peer,$('#cstat').textContent,liveBtns());
+}
+async function flush(){const c=ice;ice=[];for(const x of c)await pc.addIceCandidate(x).catch(()=>{})}
+async function startCall(name){
+  if(state!=='idle')return;
+  if(!navigator.mediaDevices||!window.RTCPeerConnection){ui('📞 Calls','Calls aren’t supported in this browser.',[['OK',()=>cbx.classList.add('hidden')]]);return}
+  peer=name;state='calling';
+  ui('📞 Calling '+name+'…','Waiting for them to answer',[['Cancel',()=>endCall('Call cancelled.',true),1]]);
+  try{await makePC()}catch(e){endCall('Allow the microphone to make calls.',false);return}
+  try{const o=await pc.createOffer();await pc.setLocalDescription(o);sig('offer',{type:o.type,sdp:o.sdp})}catch(e){endCall('Couldn’t start the call.',false);return}
+  ringTO=setTimeout(()=>{if(state==='calling')endCall('No answer.',true)},45000);
+}
+async function accept(){
+  ring(false);clearTimeout(ringTO);state='connecting';
+  ui('📞 '+peer,'Connecting…',[['Hang up',()=>endCall('Call ended.',true),1]]);
+  try{await makePC()}catch(e){sig('decline');endCall('Allow the microphone to take calls.',false);return}
+  if(!pc)return;
+  try{await pc.setRemoteDescription(pend);await flush();const a=await pc.createAnswer();await pc.setLocalDescription(a);sig('answer',{type:a.type,sdp:a.sdp})}
+  catch(e){endCall('Couldn’t connect the call.',true)}
+}
+async function onSignal(s){
+  if(s.type==='offer'){
+    if(state!=='idle'){api('call/send',{to:s.from,type:'decline',data:'busy'}).catch(()=>{});return}
+    peer=s.from;state='ringing';pend=s.data;
+    ui('📞 '+s.from+' is calling you','Incoming voice call',[['Accept',accept],['Decline',()=>{sig('decline');endCall(null)},1]]);
+    ring(true);ringTO=setTimeout(()=>{if(state==='ringing')endCall('Missed call from '+peer+'.',false)},45000);
+    return;
+  }
+  if(s.from!==peer)return;
+  if(s.type==='answer'&&pc){try{await pc.setRemoteDescription(s.data);await flush()}catch(e){}}
+  else if(s.type==='ice'){if(pc&&pc.remoteDescription)pc.addIceCandidate(s.data).catch(()=>{});else ice.push(s.data)}
+  else if(s.type==='hangup')endCall(state==='ringing'?'Missed call from '+peer+'.':'Call ended.',false);
+  else if(s.type==='decline')endCall(s.data==='busy'?peer+' is on another call.':peer+' declined the call.',false);
+}
+const pollCalls=async()=>{try{const j=await api('call/poll');for(const s of j.signals)await onSignal(s)}catch(e){}};
+const pollLoop=async()=>{if(tok&&(!document.hidden||state!=='idle'))await pollCalls();setTimeout(pollLoop,state==='idle'?3000:1000)};
+pollLoop();
+const cbar=document.querySelector('#chat .bar'),cb2=mk('button','ghost','📞 Call');cb2.onclick=()=>startCall(cName);cbar.appendChild(cb2);
 
 /* restore a saved sign-in */
 if(tok){try{const j=await api('me');applyMe(j.me);showHub()}catch(e){lost()}}
