@@ -66,6 +66,8 @@ const isOwner = u => !!OWNER && u.name.toLowerCase() === OWNER;
 const me = u => ({ name: u.name, bio: u.bio, best: u.best, owner: isOwner(u) });
 const total = u => Object.values(u.best).reduce((a, b) => a + b, 0);
 const pair = (a, b) => [a, b].sort().join('|');
+// people who added this user as a friend but haven't been added back yet
+const incoming = u => Object.values(db.users).filter(x => x.id !== u.id && x.friends.includes(u.id) && !u.friends.includes(x.id));
 
 const hits = {}, lastMsg = new Map(), mail = new Map();
 const limited = ip => {
@@ -145,7 +147,7 @@ async function route(req, res, url) {
   if (p === '/api/friends' && m === 'GET') {
     const friends = u.friends.map(id => db.users[id]).filter(Boolean)
       .map(f => ({ name: f.name, bio: f.bio, total: total(f), owner: isOwner(f), mutual: f.friends.includes(u.id) }));
-    return send(res, 200, { friends });
+    return send(res, 200, { friends, requests: incoming(u).map(x => ({ name: x.name, bio: x.bio, owner: isOwner(x) })) });
   }
   if (p === '/api/friends/add') {
     const t = byName(b.name);
@@ -159,6 +161,11 @@ async function route(req, res, url) {
   if (p === '/api/friends/remove') {
     const t = byName(b.name);
     if (t) { u.friends = u.friends.filter(i => i !== t.id); save(); }
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/api/friends/decline') {
+    const t = byName(b.name);
+    if (t && t.friends.includes(u.id)) { t.friends = t.friends.filter(i => i !== u.id); save(); }
     return send(res, 200, { ok: true });
   }
   if (p === '/api/chat') {
@@ -191,7 +198,7 @@ async function route(req, res, url) {
   if (p === '/api/call/poll') {
     const now = Date.now(), box = (mail.get(u.id) || []).filter(x => now - x.ts < 60000);
     mail.delete(u.id);
-    return send(res, 200, { signals: box });
+    return send(res, 200, { signals: box, requests: incoming(u).slice(0, 50).map(x => x.name) });
   }
   throw new E(404, 'Not found');
 }

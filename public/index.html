@@ -750,6 +750,12 @@ const api=async(p,body)=>{
 const applyMe=me=>{user={name:me.name,bio:me.bio};best=me.best||{};isOwner=!!me.owner;acct=null};
 const mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const lost=()=>{tok=null;try{localStorage.removeItem('mg_tok')}catch(e){}};
+const frb=$('#frb'),ftitle=document.querySelector('#friends .bar .t');
+function setBadge(n){
+  const t='👥 Friends'+(n?' ('+n+')':'');
+  frb.textContent=t;frb.style.cssText=n?'border-color:#ff5d5d;color:#ff5d5d;font-weight:800':'';
+  if(ftitle)ftitle.textContent=t;
+}
 
 /* scores */
 end=function(g,s){if(s>(best[g]||0)){best[g]=s;if(tok)api('best',{game:g,score:s}).catch(()=>{})}};
@@ -765,7 +771,7 @@ authGo=async function(){
 };
 $('#go').onclick=authGo;
 $('#pw').onkeydown=e=>{if(e.key==='Enter')authGo()};
-$('#out').onclick=()=>{if(state!=='idle')endCall(null,true);lost();user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
+$('#out').onclick=()=>{if(state!=='idle')endCall(null,true);lost();setBadge(0);user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
 
 /* bio (saved to the server a moment after typing stops) */
 const rs=renderSet;
@@ -789,7 +795,20 @@ renderF=async function(){
   const box=$('#flist');box.innerHTML='';
   const note=t=>{const p=mk('p','msg',t);p.style.color='var(--mut)';box.appendChild(p)};
   if(!tok){note('Sign in with an account to add friends and chat.');return}
-  let L;try{L=(await api('friends')).friends}catch(e){note(e.message);return}
+  let L,R;try{const j=await api('friends');L=j.friends;R=j.requests||[]}catch(e){note(e.message);return}
+  setBadge(R.length);
+  if(R.length){
+    const h=mk('b',null,'Friend requests ('+R.length+')');h.style.cssText='display:block;margin:4px 0';box.appendChild(h);
+    R.forEach(r=>{
+      const row=mk('div','fr'),av=mk('div','av',r.name[0].toUpperCase()),info=mk('div','i'),b=mk('b',null,r.name);
+      if(r.owner)b.append(' ',mk('span','owner','👑 OWNER'));
+      info.append(b,mk('small',null,(r.bio||'No bio')+' · wants to be your friend'));
+      const ac=mk('button',null,'Accept');ac.onclick=async()=>{try{await api('friends/add',{name:r.name});renderF()}catch(e){}};
+      const dc=mk('button','ghost','Decline');dc.onclick=async()=>{try{await api('friends/decline',{name:r.name});renderF()}catch(e){}};
+      row.append(av,info,ac,dc);box.appendChild(row);
+    });
+    const h2=mk('b',null,'Your friends');h2.style.cssText='display:block;margin:14px 0 4px';box.appendChild(h2);
+  }
   if(!L.length)note('No friends yet — add one above!');
   L.forEach(f=>{
     const row=mk('div','fr'),av=mk('div','av',f.name[0].toUpperCase()),info=mk('div','i'),b=mk('b',null,f.name);
@@ -921,7 +940,31 @@ async function onSignal(s){
   else if(s.type==='hangup')endCall(state==='ringing'?'Missed call from '+peer+'.':'Call ended.',false);
   else if(s.type==='decline')endCall(s.data==='busy'?peer+' is on another call.':peer+' declined the call.',false);
 }
-const pollCalls=async()=>{try{const j=await api('call/poll');for(const s of j.signals)await onSignal(s)}catch(e){}};
+/* friend-request popup + count */
+const seenReq=new Set((()=>{try{return JSON.parse(localStorage.getItem('mg_seenreq')||'[]')}catch(e){return[]}})());
+const tst=mk('div','hidden');
+tst.style.cssText='position:fixed;top:calc(14px + env(safe-area-inset-top,0px));left:50%;transform:translateX(-50%);z-index:60;width:min(92vw,360px);padding:12px 14px;border-radius:14px;background:#1d1d2e;color:#fff;border:1px solid rgba(255,255,255,.25);box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;align-items:center;gap:10px';
+const tmsg=mk('div',null,'');tmsg.style.flex='1';
+const tv=mk('button',null,'View');tv.style.cssText='padding:6px 12px;font-size:13px;min-width:0';
+const tx=mk('button','ghost','✕');tx.style.cssText='padding:6px 10px;font-size:13px;min-width:0;color:#fff;border-color:rgba(255,255,255,.3)';
+tst.append(tmsg,tv,tx);document.body.appendChild(tst);
+let tt=null;
+const toast=txt=>{tmsg.textContent=txt;tst.classList.remove('hidden');clearTimeout(tt);tt=setTimeout(()=>tst.classList.add('hidden'),7000)};
+tx.onclick=()=>tst.classList.add('hidden');
+tv.onclick=()=>{tst.classList.add('hidden');renderF();view('friends')};
+const pollCalls=async()=>{
+  try{
+    const j=await api('call/poll');
+    for(const s of j.signals)await onSignal(s);
+    const R=j.requests||[];setBadge(R.length);
+    const fresh=R.filter(n=>!seenReq.has(n));
+    if(fresh.length){
+      fresh.forEach(n=>seenReq.add(n));
+      try{localStorage.setItem('mg_seenreq',JSON.stringify([...seenReq].slice(-100)))}catch(e){}
+      toast('👋 '+(fresh.length===1?fresh[0]+' sent you a friend request':fresh.length+' new friend requests'));
+    }
+  }catch(e){}
+};
 const pollLoop=async()=>{if(tok&&(!document.hidden||state!=='idle'))await pollCalls();setTimeout(pollLoop,state==='idle'?3000:1000)};
 pollLoop();
 const cbar=document.querySelector('#chat .bar'),cb2=mk('button','ghost','📞 Call');cb2.onclick=()=>startCall(cName);cbar.appendChild(cb2);
