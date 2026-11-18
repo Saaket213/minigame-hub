@@ -18,7 +18,7 @@ const rcmd = async cmd => {
   return j.result;
 };
 
-let db = { users: {}, tokens: {}, chats: {}, mid: 0 };
+let db = { users: {}, tokens: {}, chats: {}, reads: {}, groups: {}, gchats: {}, mid: 0 };
 async function init() {
   await loadDb();
   if (!db.vapid) {   // keys that let the server send "incoming call" alerts to phones and laptops
@@ -48,8 +48,10 @@ function trim() {   // keeps the saved copy under 1 MB
   for (const keep of [300, 150, 60, 20]) {
     if (s.length < 900000) break;
     for (const k in db.chats) db.chats[k] = db.chats[k].slice(-keep);
+    for (const k in db.gchats) db.gchats[k] = db.gchats[k].slice(-keep);
     s = JSON.stringify(db);
   }
+  if (s.length > 950000) console.error('Warning: saved data is ' + s.length + ' bytes, close to the 1 MB limit of the free database.');
   return s;
 }
 async function flush() {
@@ -72,11 +74,30 @@ const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(p, s, 32, (e, k) 
 const byName = n => Object.values(db.users).find(u => u.name.toLowerCase() === String(n || '').trim().toLowerCase());
 const NAME = /^[\p{L}\p{N}_. -]{2,20}$/u;
 const isOwner = u => !!OWNER && u.name.toLowerCase() === OWNER;
-const me = u => ({ name: u.name, bio: u.bio, best: u.best, owner: isOwner(u) });
+const me = u => ({ name: u.name, bio: u.bio, best: u.best, owner: isOwner(u), avatar: u.avatar || '' });
 const total = u => Object.values(u.best).reduce((a, b) => a + b, 0);
+const AV_OK = x => {
+  if (typeof x !== 'string' || x.length > 12000 || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(x)) return false;
+  const b = Buffer.from(x.split(',')[1], 'base64');
+  return (b[0] === 0xFF && b[1] === 0xD8) || (b[0] === 0x89 && b[1] === 0x50) || (b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP');
+};
 const pair = (a, b) => [a, b].sort().join('|');
 // people who added this user as a friend but haven't been added back yet
 const incoming = u => Object.values(db.users).filter(x => x.id !== u.id && x.friends.includes(u.id) && !u.friends.includes(x.id));
+// unread chat messages for a user: one entry per friend who wrote since the chat was last opened
+const unreadFor = u => u.friends.map(id => db.users[id]).filter(f => f && f.friends.includes(u.id)).map(f => {
+  const k = pair(u.id, f.id), r = db.reads[k + ':' + u.id] || 0;
+  const ms = (db.chats[k] || []).filter(x => x.f === f.id && x.id > r);
+  return ms.length ? { name: f.name, count: ms.length, text: ms[ms.length - 1].t.slice(0, 80), id: ms[ms.length - 1].id } : null;
+}).filter(Boolean);
+// unread group messages for a user: one entry per group
+const unreadGroups = u => Object.values(db.groups).filter(g => g.members.includes(u.id)).map(g => {
+  const r = db.reads['g:' + g.id + ':' + u.id] || 0;
+  const ms = (db.gchats[g.id] || []).filter(x => x.f !== u.id && x.id > r);
+  if (!ms.length) return null;
+  const l = ms[ms.length - 1], who = db.users[l.f];
+  return { gid: g.id, name: g.name, count: ms.length, text: (who ? who.name : '?') + ': ' + l.t.slice(0, 80), id: l.id };
+}).filter(Boolean);
 
 const hits = {}, lastMsg = new Map(), mail = new Map();
 const limited = ip => {
@@ -210,9 +231,10 @@ async function route(req, res, url) {
     return send(res, 200, { me: me(u) });
   }
   if (p === '/api/friends' && m === 'GET') {
+    const un = Object.fromEntries(unreadFor(u).map(x => [x.name, x.count]));
     const friends = u.friends.map(id => db.users[id]).filter(Boolean)
-      .map(f => ({ name: f.name, bio: f.bio, total: total(f), owner: isOwner(f), mutual: f.friends.includes(u.id) }));
-    return send(res, 200, { friends, requests: incoming(u).map(x => ({ name: x.name, bio: x.bio, owner: isOwner(x) })) });
+      .map(f => ({ name: f.name, bio: f.bio, total: total(f), owner: isOwner(f), mutual: f.friends.includes(u.id), unread: un[f.name] || 0, avatar: f.avatar || '' }));
+    return send(res, 200, { friends, requests: incoming(u).map(x => ({ name: x.name, bio: x.bio, owner: isOwner(x), avatar: x.avatar || '' })) });
   }
   if (p === '/api/friends/add') {
     const t = byName(b.name);
@@ -249,6 +271,8 @@ async function route(req, res, url) {
       save();
       return send(res, 200, { ok: true });
     }
+    const last = th.length ? th[th.length - 1].id : 0;   // opening the chat counts as reading it
+    if ((db.reads[k + ':' + u.id] || 0) < last) { db.reads[k + ':' + u.id] = last; save(); }
     return send(res, 200, { msgs: th.slice(-100).map(x => ({ id: x.id, mine: x.f === u.id, t: x.t, ts: x.ts })) });
   }
   if (p === '/api/push/key') return send(res, 200, { key: db.vapid.pub });
@@ -267,6 +291,91 @@ async function route(req, res, url) {
   if (p === '/api/push/unsubscribe') {
     u.subs = (u.subs || []).filter(y => y.endpoint !== String(b.endpoint || '')); save();
     return send(res, 200, { ok: true });
+  }
+  if (p === '/api/avatar') {
+    const a = String(b.avatar || '');
+    if (a && !AV_OK(a)) throw new E(400, 'That picture can\u2019t be used. Try another photo.');
+    u.avatar = a; save();
+    return send(res, 200, { me: me(u) });
+  }
+
+  // ----- groups -----
+  const gOf = id => { const g = db.groups[String(id || '')]; if (!g || !g.members.includes(u.id)) throw new E(404, 'Group not found.'); return g; };
+  const mutual = t => !!t && u.friends.includes(t.id) && t.friends.includes(u.id);
+  const gInfo = (g, full) => Object.assign({ id: g.id, name: g.name, bio: g.bio, avatar: g.avatar || '', owner: g.owner === u.id, count: g.members.length },
+    full ? { members: g.members.map(id => db.users[id]).filter(Boolean).map(x => ({ name: x.name, avatar: x.avatar || '', isOwner: x.id === g.owner })) } : {});
+  const gName = x => { const n = String(x || '').trim(); if (n.length < 1 || n.length > 30) throw new E(400, 'Group name must be 1 to 30 characters.'); return n; };
+  const gNotify = (g, ids, msg) => ids.forEach(id => pushTo(db.users[id], Object.assign({ tag: 'g-' + g.id }, msg)));
+  if (p === '/api/groups' && m === 'GET') {
+    const un = Object.fromEntries(unreadGroups(u).map(x => [x.gid, x.count]));
+    return send(res, 200, { groups: Object.values(db.groups).filter(g => g.members.includes(u.id)).map(g => Object.assign(gInfo(g), { unread: un[g.id] || 0 })) });
+  }
+  if (p === '/api/groups/create') {
+    const name = gName(b.name), bio = String(b.bio || '').trim().slice(0, 120), av = String(b.avatar || '');
+    if (av && !AV_OK(av)) throw new E(400, 'That picture can\u2019t be used. Try another photo.');
+    if (Object.values(db.groups).filter(g => g.members.includes(u.id)).length >= 200) throw new E(400, 'You\u2019re in the maximum number of groups (200).');
+    const ids = [];
+    for (const n of (Array.isArray(b.members) ? b.members : []).slice(0, 49)) {
+      const t = byName(n);
+      if (!mutual(t)) throw new E(400, 'You can only add friends who have added you back.');
+      if (!ids.includes(t.id)) ids.push(t.id);
+    }
+    const id = crypto.randomBytes(6).toString('hex');
+    const g = db.groups[id] = { id, name, bio, avatar: av, owner: u.id, members: [u.id].concat(ids), created: Date.now() };
+    db.gchats[id] = []; save();
+    gNotify(g, ids, { title: '\uD83D\uDC65 New group', body: u.name + ' added you to ' + name });
+    return send(res, 200, { group: gInfo(g, true) });
+  }
+  if (p === '/api/group' && m === 'GET') return send(res, 200, { group: gInfo(gOf(url.searchParams.get('id')), true) });
+  if (p === '/api/group/update') {
+    const g = gOf(b.id);
+    if (g.owner !== u.id) throw new E(403, 'Only the group owner can change the group.');
+    if (b.name !== undefined) g.name = gName(b.name);
+    if (b.bio !== undefined) g.bio = String(b.bio || '').trim().slice(0, 120);
+    if (b.avatar !== undefined) { const av = String(b.avatar || ''); if (av && !AV_OK(av)) throw new E(400, 'That picture can\u2019t be used. Try another photo.'); g.avatar = av; }
+    save();
+    return send(res, 200, { group: gInfo(g, true) });
+  }
+  if (p === '/api/group/add') {
+    const g = gOf(b.id), t = byName(b.name);
+    if (!mutual(t)) throw new E(400, 'You can only add friends who have added you back.');
+    if (g.members.includes(t.id)) throw new E(400, 'Already in the group.');
+    if (g.members.length >= 50) throw new E(400, 'The group is full (50 members).');
+    g.members.push(t.id); save();
+    gNotify(g, [t.id], { title: '\uD83D\uDC65 New group', body: u.name + ' added you to ' + g.name });
+    return send(res, 200, { group: gInfo(g, true) });
+  }
+  if (p === '/api/group/remove') {
+    const g = gOf(b.id), t = byName(b.name);
+    if (g.owner !== u.id) throw new E(403, 'Only the group owner can remove people.');
+    if (!t || t.id === u.id || !g.members.includes(t.id)) throw new E(400, 'Can\u2019t remove that person.');
+    g.members = g.members.filter(x => x !== t.id); delete db.reads['g:' + g.id + ':' + t.id]; save();
+    return send(res, 200, { group: gInfo(g, true) });
+  }
+  if (p === '/api/group/leave') {
+    const g = gOf(b.id);
+    g.members = g.members.filter(x => x !== u.id); delete db.reads['g:' + g.id + ':' + u.id];
+    if (!g.members.length) { delete db.groups[g.id]; delete db.gchats[g.id]; }
+    else if (g.owner === u.id) g.owner = g.members[0];   // the longest-standing member takes over
+    save();
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/api/group/chat') {
+    const g = gOf(m === 'GET' ? url.searchParams.get('id') : b.id), th = db.gchats[g.id] = db.gchats[g.id] || [];
+    if (m === 'POST') {
+      const text = String(b.text || '').trim().slice(0, 300);
+      if (!text) throw new E(400, 'Empty message');
+      if (Date.now() - (lastMsg.get(u.id) || 0) < 400) throw new E(429, 'Slow down a little.');
+      lastMsg.set(u.id, Date.now());
+      th.push({ id: ++db.mid, f: u.id, t: text, ts: Date.now() });
+      if (th.length > 500) th.splice(0, th.length - 500);
+      save();
+      gNotify(g, g.members.filter(x => x !== u.id), { title: '\uD83D\uDCAC ' + g.name, body: u.name + ': ' + text.slice(0, 100) });
+      return send(res, 200, { ok: true });
+    }
+    const last = th.length ? th[th.length - 1].id : 0, rk = 'g:' + g.id + ':' + u.id;
+    if ((db.reads[rk] || 0) < last) { db.reads[rk] = last; save(); }
+    return send(res, 200, { group: gInfo(g), msgs: th.slice(-100).map(x => { const w = db.users[x.f]; return { id: x.id, from: w ? w.name : 'Former member', mine: x.f === u.id, t: x.t, ts: x.ts }; }) });
   }
   if (p === '/api/call/send') {
     const t = byName(b.to);
@@ -293,7 +402,7 @@ async function route(req, res, url) {
   if (p === '/api/call/poll') {
     const now = Date.now(), box = (mail.get(u.id) || []).filter(x => now - x.ts < 60000);
     mail.delete(u.id);
-    return send(res, 200, { signals: box, requests: incoming(u).slice(0, 50).map(x => x.name) });
+    return send(res, 200, { signals: box, requests: incoming(u).slice(0, 50).map(x => x.name), unread: unreadFor(u), gunread: unreadGroups(u) });
   }
   throw new E(404, 'Not found');
 }
