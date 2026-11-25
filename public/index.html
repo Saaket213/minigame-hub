@@ -205,7 +205,7 @@ function showHub(){
     b.innerHTML='<div class="e">'+x.e+'</div><b>'+x.n+'</b><span>'+x.d+'</span><span>Best: '+(best[x.id]||0)+'</span>'+(x.sport?'<span style="font-weight:800;color:var(--c)">\u25b6 PLAY</span>':'');
     b.onclick=()=>openGame(x.id);g.appendChild(b)};
   GAMES.filter(x=>!x.sport).forEach(mkCard);
-  const sph=document.createElement('div');sph.className='sporthead';sph.innerHTML='\ud83c\udfc5 SPORTS <small>Football \u00b7 Basketball \u00b7 Volleyball</small>';g.appendChild(sph);
+  const sph=document.createElement('div');sph.className='sporthead';sph.innerHTML='\ud83c\udfc5 SPORTS <small>Match or practice</small>';g.appendChild(sph);
   GAMES.filter(x=>x.sport).forEach(mkCard);
   view('hub');
 }
@@ -896,6 +896,192 @@ function volleyball(el,practice){
   return()=>{stop();s.stop()};
 }
 
+/* ---- penalty shootout ---- */
+function penalty(el,practice){
+  const W=640,H=360,GL=170,GRT=470,GT=70,GB=190,cx=320,N=5;
+  const c=cv(el,W,H,640),x=c.getContext('2d');
+  let fr=0,shots=0,goals=0,ph='aim',t=0,tx=0,ty=0,kx=cx,dive=0,msg='',over=false,res='',log=[];
+  const aim=()=>({x:cx+Math.sin(fr*.045)*160,y:130+Math.sin(fr*.071+1)*62});
+  function shoot(){
+    if(ph!=='aim'||over)return;
+    const a=aim();tx=a.x;ty=a.y;ph='fly';t=0;shots++;
+    dive=[-1,0,1][Math.random()*3|0];kx=cx+dive*95;
+    const inGoal=tx>GL+4&&tx<GRT-4&&ty>GT+4&&ty<GB;
+    res=!inGoal?'MISS':(Math.abs(tx-kx)<52&&ty>(dive?80:112))?'SAVED':'GOAL';
+  }
+  keys=k=>{if(k===' '||k==='Enter'||k==='ArrowUp')shoot()};
+  c.onpointerdown=shoot;pad(el,[['\u26bd Shoot',shoot]]);
+  function step(){
+    fr++;
+    if(ph==='fly'){
+      if(++t>=26){ph='res';t=0;log.push(res);msg=res==='GOAL'?'GOAL! \u26bd':res==='SAVED'?'SAVED!':'MISS!';
+        if(res==='GOAL'){goals++;setScore(goals);if(!practice)end('penalty',goals)}}
+    }else if(ph==='res'){
+      if(++t>=70){msg='';if(!practice&&shots>=N){over=true;msg='You scored '+goals+' of '+N}else{ph='aim';dive=0;kx=cx}}
+    }
+  }
+  function draw(){
+    const gr=x.createLinearGradient(0,0,0,GB);gr.addColorStop(0,'#3a8fd9');gr.addColorStop(1,'#bfe3ff');x.fillStyle=gr;x.fillRect(0,0,W,GB);
+    x.fillStyle='#1d6b34';x.fillRect(0,GB-6,W,H-GB+6);x.fillStyle='#2f9a43';for(let i=0;i<5;i++)x.fillRect(0,GB+i*34,W,17);
+    x.strokeStyle='rgba(255,255,255,.5)';x.lineWidth=1;
+    for(let i=GL;i<=GRT;i+=15){x.beginPath();x.moveTo(i,GT);x.lineTo(i,GB);x.stroke()}for(let j=GT;j<=GB;j+=15){x.beginPath();x.moveTo(GL,j);x.lineTo(GRT,j);x.stroke()}
+    x.strokeStyle='#fff';x.lineWidth=6;x.strokeRect(GL,GT,GRT-GL,GB-GT);
+    const kp=Math.min(1,(ph==='fly'?t:ph==='res'?26:0)/20);
+    x.save();x.translate(cx+(kx-cx)*kp,GB);x.rotate(dive*.8*kp);x.scale(2.2,2.2);blk(x,0,0,'#f9c74f',fr,1,false);x.restore();
+    let bx=cx,by=300,r=11;
+    if(ph==='fly'||ph==='res'){const p=Math.min(1,t/26);if(ph==='res'){bx=tx;by=ty;r=6}else{bx=cx+(tx-cx)*p;by=300+(ty-300)*p-Math.sin(Math.PI*p)*25;r=11-5*p}}
+    x.fillStyle='#fff';x.beginPath();x.arc(bx,by,r,0,7);x.fill();x.strokeStyle='#222';x.lineWidth=1.5;x.stroke();
+    if(ph==='aim'&&!over){const a=aim();x.strokeStyle='#ff5d5d';x.lineWidth=3;x.beginPath();x.arc(a.x,a.y,14+Math.sin(fr*.3)*2,0,7);x.stroke();x.beginPath();x.moveTo(a.x-20,a.y);x.lineTo(a.x+20,a.y);x.moveTo(a.x,a.y-20);x.lineTo(a.x,a.y+20);x.stroke()}
+    x.fillStyle='rgba(0,0,0,.5)';x.fillRect(W/2-120,3,240,22);x.fillStyle='#fff';x.font='bold 14px system-ui';x.textAlign='center';
+    x.fillText(practice?'PRACTICE   Goals: '+goals+' of '+shots:'PENALTIES   Goals: '+goals+' / '+N,W/2,19);
+    if(!practice)log.concat(Array(Math.max(0,N-log.length)).fill('')).slice(0,N).forEach((v,i)=>{x.fillStyle=v==='GOAL'?'#4cd4a0':v?'#ff5d5d':'rgba(255,255,255,.4)';x.beginPath();x.arc(W/2-40+i*20,38,6,0,7);x.fill()});
+    if(msg&&!over){x.font='bold 34px system-ui';x.fillStyle='#fff';x.strokeStyle='rgba(0,0,0,.5)';x.lineWidth=5;x.strokeText(msg,W/2,250);x.fillText(msg,W/2,250)}
+    x.textAlign='left';if(over)ov(x,W,H,msg);
+  }
+  const stop=loop(()=>{step();draw()});
+  return()=>stop();
+}
+
+/* ---- cricket (batting) ---- */
+function cricket(el,practice){
+  const W=640,H=360,GY=262,BX=500,MAXB=12,MAXW=3,win=practice?1.6:1;
+  const c=cv(el,W,H,640),x=c.getContext('2d');
+  let fr=0,balls=0,runs=0,outs=0,ball=null,wait=40,swing=0,msg='',msgT=0,over=false,fly=null;
+  const by=b=>b.x<330?170+80*Math.pow((b.x-100)/230,1.6):250-38*((b.x-330)/170);
+  function bowl(){balls++;ball={x:100,v:(practice?3.6:4.6)+Math.min(2.4,balls*.18)+Math.random()*1.2,swung:false}}
+  function hitTry(){
+    if(over||!ball||ball.swung||fly)return;
+    ball.swung=true;swing=14;
+    const ad=Math.abs(ball.x-BX);
+    if(ad>46*win)return;   // swung at thin air
+    const r=ad<9*win?6:ad<22*win?4:ad<36*win?2:1;
+    runs+=r;setScore(runs);if(!practice)end('cricket',runs);
+    msg=r===6?'SIX! \ud83d\udca5':r===4?'FOUR!':r+(r>1?' runs':' run');msgT=70;
+    fly={x:BX,y:by(ball)-10,vx:3+r*1.6,vy:-3-r*1.1,t:0};ball=null;wait=80;
+  }
+  keys=k=>{if(k===' '||k==='Enter'||k==='ArrowUp')hitTry()};
+  c.onpointerdown=hitTry;pad(el,[['\ud83c\udfcf Hit',hitTry]]);
+  function step(){
+    fr++;if(swing>0)swing--;if(msgT>0)msgT--;
+    if(over)return;
+    if(fly){fly.t++;fly.x+=fly.vx;fly.y+=fly.vy;fly.vy+=.22;if(fly.y>GY){fly.y=GY;fly.vy*=-.5}if(fly.t>70)fly=null}
+    if(!ball&&!fly&&--wait<=0){
+      if(!practice&&(balls>=MAXB||outs>=MAXW)){over=true;msg='Innings over: '+runs+' runs';return}
+      bowl();
+    }
+    if(ball){
+      ball.x+=ball.v;
+      if(ball.x>548){
+        if(practice){msg='Missed!'}else{outs++;msg=ball.swung?'MISSED! OUT':'BOWLED! OUT'}
+        msgT=70;ball=null;wait=70;
+      }
+    }
+  }
+  function draw(){
+    const gr=x.createLinearGradient(0,0,0,GY-40);gr.addColorStop(0,'#3a8fd9');gr.addColorStop(1,'#bfe3ff');x.fillStyle=gr;x.fillRect(0,0,W,GY-40);
+    x.fillStyle='#2b6f3a';for(let i=0;i<W;i+=28)x.fillRect(i,GY-60,14,20);   // crowd stand
+    x.fillStyle='#35a84a';x.fillRect(0,GY-40,W,H-GY+40);x.fillStyle='#e6c98a';x.fillRect(60,GY-4,520,22);
+    x.fillStyle='rgba(255,255,255,.6)';x.fillRect(BX-1,GY-4,2,22);
+    if(practice){x.fillStyle='rgba(76,212,160,.35)';x.fillRect(BX-9*win,GY-4,18*win,22)}
+    // stumps
+    x.fillStyle='#fff';[540,548,556].forEach(sx=>x.fillRect(sx,GY-42,3,42));x.fillStyle='#f9c74f';x.fillRect(540,GY-45,19,3);
+    // bowler runs in
+    const bp=ball?100:Math.max(70,100-Math.max(0,wait)*.5);
+    blk(x,bp-18,GY+6,'#ff4d4d',fr,1,!ball&&wait>0);
+    // batter and bat
+    blk(x,BX+22,GY+6,'#3a7bff',fr,-1,false);
+    x.save();x.translate(BX+14,GY-20);x.rotate(swing?-1.5+(14-swing)/14*2.9:-.5);x.fillStyle='#e0b070';x.fillRect(-4,0,8,40);x.fillStyle='#8a5a2b';x.fillRect(-2,-8,4,8);x.restore();
+    if(ball){x.fillStyle='rgba(0,0,0,.25)';x.beginPath();x.ellipse(ball.x,GY+8,5,2,0,0,7);x.fill();x.fillStyle='#d92b2b';x.beginPath();x.arc(ball.x,by(ball),6,0,7);x.fill()}
+    if(fly){x.fillStyle='#d92b2b';x.beginPath();x.arc(fly.x,fly.y,6,0,7);x.fill()}
+    x.fillStyle='rgba(0,0,0,.5)';x.fillRect(W/2-150,3,300,22);x.fillStyle='#fff';x.font='bold 14px system-ui';x.textAlign='center';
+    x.fillText(practice?'PRACTICE   Runs: '+runs:'RUNS '+runs+'   BALLS '+Math.min(balls,MAXB)+'/'+MAXB+'   OUT '+outs+'/'+MAXW,W/2,19);
+    if(msgT>0){x.font='bold 32px system-ui';x.fillStyle='#fff';x.strokeStyle='rgba(0,0,0,.5)';x.lineWidth=5;x.strokeText(msg,W/2,110);x.fillText(msg,W/2,110)}
+    x.textAlign='left';if(over)ov(x,W,H,msg);
+  }
+  const stop=loop(()=>{step();draw()});
+  return()=>stop();
+}
+
+/* ---- badminton ---- */
+function badminton(el,practice){
+  const W=640,H=360,GR=310,NX=320,NH=82,R=8,SR=36,WIN=11;
+  const c=cv(el,W,H,640),x=c.getContext('2d'),s=ctrl(el,'\u2912 Jump');
+  const pl={x:140,y:GR,vx:0,vy:0,f:1},cp={x:500,y:GR,vx:0,vy:0,f:-1};
+  let ball,pts=[0,0],fr=0,over=false,msg='',pause=0,aiErr=0;
+  function start(sv){ball={x:sv?480:160,y:140,vx:0,vy:0};pl.x=140;cp.x=500;pl.y=cp.y=GR;pl.vy=cp.vy=0;pl.vx=cp.vx=0;aiErr=(Math.random()-.5)*(practice?110:50);pause=50}
+  function hit(p){
+    const bx=p.x,by=p.y-22,dx=ball.x-bx,dy=ball.y-by,d=Math.hypot(dx,dy),mn=SR+R;
+    if(d<mn&&d>0){
+      const nx=dx/d,ny=dy/d,rv=(ball.vx-p.vx)*nx+(ball.vy-p.vy)*ny;
+      ball.x=bx+nx*mn;ball.y=by+ny*mn;
+      if(rv<0){ball.vx-=1.9*rv*nx;ball.vy-=1.9*rv*ny}
+      ball.vx+=p.vx*.35;ball.vy+=p.vy*.35;
+      if(ny<-.3&&ball.vy>-4)ball.vy=-5;
+      const sp=Math.hypot(ball.vx,ball.vy);if(sp>9){ball.vx*=9/sp;ball.vy*=9/sp}
+      if(p===cp&&ball.x>NX-20){
+        if(Math.random()<(practice?.35:.12)){ball.vx=-1.2;ball.vy=Math.min(ball.vy,-5)}   // now and then the computer mishits
+        else{ball.vx=-(4.5+Math.random()*3)*(practice?.7:1);ball.vy=Math.min(ball.vy,-6.5)}
+      }   // the computer's clears and smashes carry over the net
+    }
+  }
+  function point(who){
+    pts[who]++;setScore(pts[0]);if(!practice)end('badminton',pts[0]);
+    if(!practice&&pts[who]>=WIN){over=true;msg=who?'CPU wins':'You win! \ud83c\udfc6';if(!who)end('badminton',pts[0]+3);return}
+    msg=who?'CPU scores':'Point! \ud83c\udfd0';start(practice?0:who);pause=70;
+  }
+  function step(){
+    if(over)return;
+    fr++;
+    if(pause>0){pause--;if(pause===0)msg='';return}
+    // you
+    pl.vx=(s.r-s.l)*4.2;
+    if((s.u||s.a)&&pl.y>=GR)pl.vy=-10;
+    // computer: runs to where the ball will land, with a small mistake each rally
+    let tx=470;
+    if(ball.x>NX-10){
+      let bx=ball.x,by=ball.y,vx=ball.vx,vy=ball.vy;
+      for(let i=0;i<140&&by<GR-30;i++){vy+=.16;vx*=.996;bx+=vx;by+=vy;if(bx<R||bx>W-R)vx=-vx}
+      tx=Math.max(NX+34,Math.min(W-30,bx+24+aiErr*.5));   // stand a little behind the shuttle so the hit pushes it over the net
+    }
+    const da=tx-cp.x;cp.vx=Math.abs(da)>5?Math.sign(da)*(practice?2.6:3.7):0;
+    if(cp.y>=GR&&ball.x>NX&&Math.abs(ball.x-cp.x)<62&&ball.y<GR-60&&ball.y>GR-170&&ball.vy>-1)cp.vy=-10;
+    for(const p of[pl,cp]){
+      p.x+=p.vx;p.vy+=.6;p.y+=p.vy;
+      if(p.y>=GR){p.y=GR;p.vy=0}
+      if(p.vx)p.f=p.vx>0?1:-1;
+    }
+    pl.x=Math.max(26,Math.min(NX-30,pl.x));cp.x=Math.max(NX+30,Math.min(W-26,cp.x));
+    // ball
+    ball.vy+=.16;ball.vx*=.996;ball.x+=ball.vx;ball.y+=ball.vy;
+    hit(pl);hit(cp);
+    if(ball.x<R){ball.x=R;ball.vx=Math.abs(ball.vx)}
+    if(ball.x>W-R){ball.x=W-R;ball.vx=-Math.abs(ball.vx)}
+    if(ball.y<-250){ball.y=-250;ball.vy=Math.abs(ball.vy)}
+    const tdx=ball.x-NX,tdy=ball.y-(GR-NH),td=Math.hypot(tdx,tdy);
+    if(td<R+4&&td>0){const nx=tdx/td,ny=tdy/td,rv=ball.vx*nx+ball.vy*ny;if(rv<0){ball.vx-=1.8*rv*nx;ball.vy-=1.8*rv*ny}ball.x=NX+nx*(R+4);ball.y=GR-NH+ny*(R+4)}
+    if(ball.y>GR-NH+2&&Math.abs(tdx)<R+3){const sg=tdx>=0?1:-1;ball.x=NX+sg*(R+3);ball.vx=sg*Math.abs(ball.vx)*.6}
+    if(ball.y>=GR-R){ball.y=GR-R;point(ball.x<NX?1:0)}
+  }
+  function draw(){
+    const gr=x.createLinearGradient(0,0,0,GR);gr.addColorStop(0,'#2b2f6b');gr.addColorStop(1,'#6a5acd');x.fillStyle=gr;x.fillRect(0,0,W,GR);
+    x.fillStyle='rgba(255,255,255,.07)';for(let i=0;i<8;i++)x.fillRect(i*90+20,40,50,30);
+    x.fillStyle='#3b9b5a';x.fillRect(0,GR-14,W,H-GR+14);x.fillStyle='#fff';x.fillRect(0,GR-14,W,2);x.fillRect(NX-150,GR-14,2,24);x.fillRect(NX+150,GR-14,2,24);
+    x.fillStyle='#9a9aa8';x.fillRect(NX-2,GR-NH,4,NH);x.fillStyle='#fff';x.fillRect(NX-3,GR-NH,6,6);
+    x.strokeStyle='rgba(255,255,255,.7)';x.lineWidth=1;for(let i=0;i<5;i++){x.beginPath();x.moveTo(NX-1,GR-NH+8+i*14);x.lineTo(NX+1,GR-NH+8+i*14);x.stroke()}
+    blk(x,pl.x,pl.y,'#ff8a3d',fr,pl.f,pl.vx!==0&&pl.y>=GR);
+    blk(x,cp.x,cp.y,'#8b8bff',fr,cp.f,cp.vx!==0&&cp.y>=GR);
+    [pl,cp].forEach(p=>{x.strokeStyle='#ddd';x.lineWidth=3;x.beginPath();x.moveTo(p.x+p.f*10,p.y-22);x.lineTo(p.x+p.f*26,p.y-44);x.stroke();x.strokeStyle='#fff';x.lineWidth=2;x.beginPath();x.ellipse(p.x+p.f*30,p.y-50,8,11,.5*p.f,0,7);x.stroke()});
+    x.save();x.translate(ball.x,ball.y);x.rotate(Math.atan2(ball.vy,ball.vx)+Math.PI);x.fillStyle='#fff';x.beginPath();x.moveTo(0,0);x.lineTo(15,-7);x.lineTo(15,7);x.closePath();x.fill();x.fillStyle='#ff5d5d';x.beginPath();x.arc(0,0,5,0,7);x.fill();x.restore();
+    x.fillStyle='rgba(0,0,0,.5)';x.fillRect(W/2-110,3,220,22);x.fillStyle='#fff';x.font='bold 14px system-ui';x.textAlign='center';x.fillText(practice?'PRACTICE   You '+pts[0]+' - '+pts[1]+' CPU':'YOU '+pts[0]+' - '+pts[1]+' CPU',W/2,19);
+    if(msg&&!over){x.font='bold 28px system-ui';x.fillStyle='#fff';x.strokeStyle='rgba(0,0,0,.5)';x.lineWidth=4;x.strokeText(msg,W/2,110);x.fillText(msg,W/2,110)}
+    x.textAlign='left';
+    if(over)ov(x,W,H,msg);
+  }
+  start(0);
+  const stop=loop(()=>{step();draw()});
+  return()=>{stop();s.stop()};
+}
+
 const GAMES=[
   {id:'parkour',c:'#ff8a3d',n:'Parkour',e:'🏃',d:'Run and jump across the gaps',run:parkour},
   {id:'ttt',c:'#ff5d8f',n:'Tic-Tac-Toe',e:'⭕',d:'Beat the computer or play a friend',run:ttt},
@@ -914,7 +1100,10 @@ const GAMES=[
   {id:'jet',c:'#5b8cff',n:'Jet Fighter',e:'✈️',d:'Shoot down the enemy jets',run:jet},
   {id:'football',c:'#35a84a',n:'Football',e:'\u26bd',d:'5 a side vs the Red Robots',run:football,sport:true,practice:'No timer and the Red Robots stand still, so you can practise dribbling and shooting. Scores aren\u2019t saved.'},
   {id:'basketball',c:'#ff8a3d',n:'Basketball',e:'\ud83c\udfc0',d:'Time your shots, beat the clock',run:basketball,sport:true,practice:'No timer, a slower meter with a bigger green zone, and you pick the spot with \u25c0 \u25b6. Scores aren\u2019t saved.'},
-  {id:'volley',c:'#4cc9f0',n:'Volleyball',e:'\ud83c\udfd0',d:'Beach match, first to 7',run:volleyball,sport:true,practice:'A slower, more forgiving computer and no game over, so you can practise rallies. Scores aren\u2019t saved.'}
+  {id:'volley',c:'#4cc9f0',n:'Volleyball',e:'\ud83c\udfd0',d:'Beach match, first to 7',run:volleyball,sport:true,practice:'A slower, more forgiving computer and no game over, so you can practise rallies. Scores aren\u2019t saved.'},
+  {id:'penalty',c:'#2fbf71',n:'Penalty Shootout',e:'\ud83e\udd45',d:'5 kicks, beat the keeper',run:penalty,sport:true,practice:'Unlimited kicks, no pressure. Scores aren\u2019t saved.'},
+  {id:'cricket',c:'#d9a13b',n:'Cricket',e:'\ud83c\udfcf',d:'Time your shots, hit sixes',run:cricket,sport:true,practice:'Slower bowling, a bigger sweet spot and no wickets. Scores aren\u2019t saved.'},
+  {id:'badminton',c:'#8b8bff',n:'Badminton',e:'\ud83c\udff8',d:'First to 11 vs the computer',run:badminton,sport:true,practice:'A slower, more forgiving computer and no game over. Scores aren\u2019t saved.'}
 ];
 
 let set=Object.assign({theme:'auto',bg:'',fx:true},store.get('mg_set',{}));
