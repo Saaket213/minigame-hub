@@ -1298,13 +1298,34 @@ $('#sunb').onclick=async()=>{
 
 /* friends */
 $('#flab').style.display='none';$('#fdev').style.display='none';
-const fnote=document.querySelector('#friends p[style]');if(fnote)fnote.textContent='💬 Add a friend by their username. Once you have both added each other, you can chat.';
+const fnote=document.querySelector('#friends p[style]');if(fnote)fnote.textContent='💬 Message anyone by username. Calls and groups still need you to add each other.';
+const dmb=mk('button','ghost','💬 Message');dmb.style.flex='none';$('#fadd').after(dmb);
+$('#flab').parentNode.querySelector('label[for="fn"]').textContent='Add or message a player by username';
+$('#fn').placeholder='Their username';$('#fn').parentNode.style.flexWrap='wrap';$('#fn').style.flex='1 1 100%';$('#fadd').style.flex=dmb.style.flex='1';
+const cerr=mk('p','msg','');cerr.style.color='var(--hot)';$('#cin').parentNode.after(cerr);
+dmb.onclick=async()=>{
+  const n=$('#fn').value.trim(),er=$('#ferr'),bad=t=>{er.style.color='var(--hot)';er.textContent=t};
+  if(!tok)return bad('Sign in with an account first.');
+  if(n.length<2)return bad('Enter a username (at least 2 characters).');
+  try{await api('chat?with='+encodeURIComponent(n));$('#fn').value='';er.textContent='';openChat(n)}catch(e){bad(e.message)}
+};
 renderF=async function(){
   const box=$('#flist');box.innerHTML='';
   const note=t=>{const p=mk('p','msg',t);p.style.color='var(--mut)';box.appendChild(p)};
   if(!tok){note('Sign in with an account to add friends and chat.');return}
-  let L,R;try{const j=await api('friends');L=j.friends;R=j.requests||[]}catch(e){note(e.message);return}
-  setBadge(R.length);setUnread(L.reduce((a,f)=>a+(f.unread||0),0));
+  let L,R,D;try{const[j,d]=await Promise.all([api('friends'),api('dms')]);L=j.friends;R=j.requests||[];D=d.dms}catch(e){note(e.message);return}
+  box.innerHTML='';
+  setBadge(R.length);setUnread(D.reduce((a,x)=>a+x.unread,0));
+  if(D.length){
+    const h=mk('b',null,'📩 Messages');h.style.cssText='display:block;margin:4px 0';box.appendChild(h);
+    D.forEach(x=>{
+      const row=mk('div','fr'),av=avEl(x.avatar,x.name),info=mk('div','i'),b=mk('b',null,x.name);
+      if(x.owner)b.append(' ',mk('span','owner','👑 OWNER'));
+      info.append(b,mk('small',null,x.blocked?'Blocked':(x.mine?'You: ':'')+x.text));
+      const o=mk('button',null,'Open'+(x.unread?' ('+x.unread+')':''));o.onclick=()=>openChat(x.name);
+      row.append(av,info,o);box.appendChild(row);
+    });
+  }
   if(R.length){
     const h=mk('b',null,'Friend requests ('+R.length+')');h.style.cssText='display:block;margin:4px 0';box.appendChild(h);
     R.forEach(r=>{
@@ -1315,15 +1336,16 @@ renderF=async function(){
       const dc=mk('button','ghost','Decline');dc.onclick=async()=>{try{await api('friends/decline',{name:r.name});renderF()}catch(e){}};
       row.append(av,info,ac,dc);box.appendChild(row);
     });
-    const h2=mk('b',null,'Your friends');h2.style.cssText='display:block;margin:14px 0 4px';box.appendChild(h2);
   }
+  if(R.length||D.length){const h2=mk('b',null,'Your friends');h2.style.cssText='display:block;margin:14px 0 4px';box.appendChild(h2);}
   if(!L.length)note('No friends yet — add one above!');
   L.forEach(f=>{
     const row=mk('div','fr'),av=avEl(f.avatar,f.name),info=mk('div','i'),b=mk('b',null,f.name);
     if(f.owner)b.append(' ',mk('span','owner','👑 OWNER'));
     info.append(b,mk('small',null,(f.bio||'No bio')+' · Total score '+f.total+' · '+(f.mutual?'Friends ✓':'Waiting for them to add you back')));
     row.append(av,info);
-    if(f.mutual){const cb=mk('button',null,'💬 Chat'+(f.unread?' ('+f.unread+')':''));cb.onclick=()=>openChat(f.name);const cl=mk('button',null,'📞 Call');cl.onclick=()=>startCall(f.name);row.append(cb,cl)}
+    const cb=mk('button',null,'💬 Chat'+(f.unread?' ('+f.unread+')':''));cb.onclick=()=>openChat(f.name);row.append(cb);
+    if(f.mutual){const cl=mk('button',null,'📞 Call');cl.onclick=()=>startCall(f.name);row.append(cl)}
     const rm=mk('button','ghost','Remove');rm.onclick=async()=>{try{await api('friends/remove',{name:f.name});renderF()}catch(e){}};
     row.append(rm);box.appendChild(row);
   });
@@ -1334,7 +1356,7 @@ $('#fadd').onclick=async()=>{
   if(!tok)return msg('Sign in with an account first.',1);
   if(n.length<2)return msg('Enter a username (at least 2 characters).',1);
   try{const j=await api('friends/add',{name:n});$('#fn').value='';
-    msg(j.mutual?'You’re now friends with '+j.name+'!':'Added '+j.name+'! You can chat once they add you back.');renderF()}
+    msg(j.mutual?'You’re now friends with '+j.name+'!':'Added '+j.name+'! You can message them now.');renderF()}
   catch(e){msg(e.message,1)}
 };
 
@@ -1348,15 +1370,16 @@ const drawC=ms=>{
     d.appendChild(mk('small',null,new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})));box.appendChild(d)});
   box.scrollTop=box.scrollHeight;
 };
-const loadC=async()=>{try{drawC((await api('chat?with='+encodeURIComponent(cName))).msgs)}catch(e){}};
+let isBlocked=false;
+const loadC=async()=>{const n=cName;try{const j=await api('chat?with='+encodeURIComponent(n));if(n!==cName)return;isBlocked=j.blocked;blk2.textContent=isBlocked?'Unblock':'🚫 Block';drawC(j.msgs)}catch(e){}};
 openChat=function(name){
-  cName=name;shown='';$('#ct').textContent='💬 '+name;$('#cmsgs').innerHTML='';view('chat');loadC();
+  cName=name;shown=null;cerr.textContent='';$('#cin').value='';$('#ct').textContent='💬 '+name;$('#cmsgs').innerHTML='';view('chat');loadC();
   clearInterval(poll);poll=setInterval(()=>{if($('#chat').classList.contains('hidden'))clearInterval(poll);else loadC()},2500);
   setTimeout(()=>$('#cin').focus(),50);
 };
 sendC=async function(){
   const t=$('#cin').value.trim();if(!t||!cName)return;$('#cin').value='';
-  try{await api('chat',{to:cName,text:t});loadC()}catch(e){$('#cin').value=t}
+  try{await api('chat',{to:cName,text:t});cerr.textContent='';loadC()}catch(e){$('#cin').value=t;cerr.textContent=e.message}
 };
 $('#csend').onclick=sendC;
 
@@ -1499,7 +1522,7 @@ const pollCalls=async()=>{
     const newMsgs=un.filter(x=>x.id>(seenMsg[x.name]||0)&&!(chatOpen&&cName===x.name));
     un.forEach(x=>{seenMsg[x.name]=Math.max(seenMsg[x.name]||0,x.id)});
     if(newMsgs.length===1)toast('💬 '+newMsgs[0].name+': '+newMsgs[0].text,newMsgs[0].name);
-    else if(newMsgs.length>1)toast('💬 '+newMsgs.reduce((a,x)=>a+x.count,0)+' new messages from '+newMsgs.length+' friends');
+    else if(newMsgs.length>1)toast('💬 '+newMsgs.reduce((a,x)=>a+x.count,0)+' new messages from '+newMsgs.length+' people');
     const gu=j.gunread||[];setGU(gu.reduce((a,x)=>a+x.count,0));
     const gOpen=!$('#gchat').classList.contains('hidden');
     const newG=gu.filter(x=>x.id>(seenG[x.gid]||0)&&!(gOpen&&gcur===x.gid));
@@ -1511,6 +1534,11 @@ const pollCalls=async()=>{
 const pollLoop=async()=>{if(tok&&(!document.hidden||state!=='idle'))await pollCalls();setTimeout(pollLoop,state==='idle'?3000:1000)};
 pollLoop();
 const cbar=document.querySelector('#chat .bar'),cb2=mk('button','ghost','📞 Call');cb2.onclick=()=>startCall(cName);cbar.appendChild(cb2);
+const blk2=mk('button','ghost','🚫 Block');cbar.appendChild(blk2);
+blk2.onclick=async()=>{
+  if(!isBlocked&&!confirm('Block '+cName+'? They won’t be able to message you.'))return;
+  try{await api('block',{name:cName,on:!isBlocked});cerr.textContent='';loadC()}catch(e){cerr.textContent=e.message}
+};
 
 /* ---------- installable app + call alerts + ringtone settings ---------- */
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&tok)pollCalls()});

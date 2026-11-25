@@ -84,8 +84,12 @@ const AV_OK = x => {
 const pair = (a, b) => [a, b].sort().join('|');
 // people who added this user as a friend but haven't been added back yet
 const incoming = u => Object.values(db.users).filter(x => x.id !== u.id && x.friends.includes(u.id) && !u.friends.includes(x.id));
-// unread chat messages for a user: one entry per friend who wrote since the chat was last opened
-const unreadFor = u => u.friends.map(id => db.users[id]).filter(f => f && f.friends.includes(u.id)).map(f => {
+const blocks = (a, b) => (a.blocked || []).includes(b.id);   // has a blocked b?
+// everyone this user has a direct message thread with
+const partners = u => Object.keys(db.chats).filter(k => db.chats[k].length && k.split('|').includes(u.id))
+  .map(k => db.users[k.split('|').find(i => i !== u.id)]).filter(Boolean);
+// unread chat messages for a user: one entry per person who wrote since the chat was last opened
+const unreadFor = u => partners(u).filter(f => !blocks(u, f)).map(f => {
   const k = pair(u.id, f.id), r = db.reads[k + ':' + u.id] || 0;
   const ms = (db.chats[k] || []).filter(x => x.f === f.id && x.id > r);
   return ms.length ? { name: f.name, count: ms.length, text: ms[ms.length - 1].t.slice(0, 80), id: ms[ms.length - 1].id } : null;
@@ -256,15 +260,34 @@ async function route(req, res, url) {
     if (t && t.friends.includes(u.id)) { t.friends = t.friends.filter(i => i !== u.id); save(); }
     return send(res, 200, { ok: true });
   }
+  if (p === '/api/dms') {   // inbox: newest conversation first
+    const un = Object.fromEntries(unreadFor(u).map(x => [x.name, x.count]));
+    const dms = partners(u).map(f => { const l = db.chats[pair(u.id, f.id)].slice(-1)[0];
+      return { name: f.name, avatar: f.avatar || '', owner: isOwner(f), text: l.t.slice(0, 60), mine: l.f === u.id, id: l.id, unread: un[f.name] || 0, blocked: blocks(u, f) }; })
+      .sort((a, b) => b.id - a.id);
+    return send(res, 200, { dms });
+  }
+  if (p === '/api/block') {
+    const t = byName(b.name);
+    if (!t || t.id === u.id) throw new E(404, 'No player with that username.');
+    u.blocked = (u.blocked || []).filter(i => i !== t.id);
+    if (b.on) u.blocked.push(t.id);
+    save();
+    return send(res, 200, { ok: true });
+  }
   if (p === '/api/chat') {
     const t = byName(m === 'GET' ? url.searchParams.get('with') : b.to);
-    if (!t || !u.friends.includes(t.id) || !t.friends.includes(u.id)) throw new E(403, 'You can chat once you both add each other.');
-    const k = pair(u.id, t.id), th = db.chats[k] = db.chats[k] || [];
+    if (!t) throw new E(404, 'No player with that username.');
+    if (t.id === u.id) throw new E(400, 'That\u2019s you!');
+    if (m === 'POST' && blocks(u, t)) throw new E(403, 'Unblock this player to message them.');
+    if (m === 'POST' && blocks(t, u)) throw new E(403, 'You can\u2019t message this player.');
+    const k = pair(u.id, t.id), th = db.chats[k] || [];
     if (m === 'POST') {
       const text = String(b.text || '').trim().slice(0, 300);
       if (!text) throw new E(400, 'Empty message');
       if (Date.now() - (lastMsg.get(u.id) || 0) < 400) throw new E(429, 'Slow down a little.');
       lastMsg.set(u.id, Date.now());
+      db.chats[k] = th;
       th.push({ id: ++db.mid, f: u.id, t: text, ts: Date.now() });
       pushTo(t, { title: '\uD83D\uDCAC ' + u.name, body: text.slice(0, 100), tag: 'chat-' + u.id });
       if (th.length > 500) th.splice(0, th.length - 500);
@@ -273,7 +296,7 @@ async function route(req, res, url) {
     }
     const last = th.length ? th[th.length - 1].id : 0;   // opening the chat counts as reading it
     if ((db.reads[k + ':' + u.id] || 0) < last) { db.reads[k + ':' + u.id] = last; save(); }
-    return send(res, 200, { msgs: th.slice(-100).map(x => ({ id: x.id, mine: x.f === u.id, t: x.t, ts: x.ts })) });
+    return send(res, 200, { blocked: blocks(u, t), msgs: th.slice(-100).map(x => ({ id: x.id, mine: x.f === u.id, t: x.t, ts: x.ts })) });
   }
   if (p === '/api/push/key') return send(res, 200, { key: db.vapid.pub });
   if (p === '/api/push/subscribe') {
@@ -380,6 +403,7 @@ async function route(req, res, url) {
   if (p === '/api/call/send') {
     const t = byName(b.to);
     if (!t || !u.friends.includes(t.id) || !t.friends.includes(u.id)) throw new E(403, 'You can call once you both add each other.');
+    if (blocks(u, t) || blocks(t, u)) throw new E(403, 'You can\u2019t call this player.');
     const type = String(b.type || '');
     if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) throw new E(400, 'Bad call message');
     if (JSON.stringify(b.data === undefined ? null : b.data).length > 12000) throw new E(400, 'Call message too big');
