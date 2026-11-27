@@ -166,7 +166,7 @@ const send = (res, code, obj) => {
 };
 const body = req => new Promise((ok, no) => {
   let s = '';
-  req.on('data', c => { s += c; if (s.length > 20000) { no(new E(400, 'Request too big')); req.destroy(); } });
+  req.on('data', c => { s += c; if (s.length > 50000) { no(new E(400, 'Request too big')); req.destroy(); } });
   req.on('end', () => { try { ok(s ? JSON.parse(s) : {}); } catch (e) { no(new E(400, 'Bad request')); } });
 });
 
@@ -424,13 +424,14 @@ async function route(req, res, url) {
     if (blocks(u, t) || blocks(t, u)) throw new E(403, 'You can\u2019t call this player.');
     const type = String(b.type || '');
     if (!['offer', 'answer', 'ice', 'hangup', 'decline'].includes(type)) throw new E(400, 'Bad call message');
-    if (JSON.stringify(b.data === undefined ? null : b.data).length > 12000) throw new E(400, 'Call message too big');
+    if (JSON.stringify(b.data === undefined ? null : b.data).length > 40000) throw new E(400, 'Call message too big');
     const box = mail.get(t.id) || [];
     box.push({ from: u.name, type, data: b.data === undefined ? null : b.data, ts: Date.now() });
     mail.set(t.id, box.slice(-100));
     if (type === 'offer') {
       ringing.set(t.id, { from: u.id, ts: Date.now() });
-      pushTo(t, { title: '\uD83D\uDCDE ' + called(t, u) + ' is calling you', body: 'Tap to answer', call: true, tag: 'call' });
+      const vid = !!(b.data && b.data.video);
+      pushTo(t, { title: (vid ? '\uD83D\uDCF9 ' : '\uD83D\uDCDE ') + called(t, u) + (vid ? ' is video calling you' : ' is calling you'), body: 'Tap to answer', call: true, tag: 'call' });
     } else if (type === 'answer' || type === 'decline') ringing.delete(u.id);
     else if (type === 'hangup') {
       const r = ringing.get(t.id);
