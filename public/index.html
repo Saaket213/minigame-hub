@@ -753,27 +753,28 @@ function football(el,practice){
 function basketball(el,practice){
   const narrow=window.innerWidth<700,W=narrow?480:760,H=narrow?520:480;
   const c=cv(el,W,H,narrow?480:760),x=c.getContext('2d');
-  c.style.maxHeight='58vh';c.style.width='auto';c.style.maxWidth='100%';
+  c.style.maxHeight=window.innerHeight<620?'45vh':'52vh';c.style.width='auto';c.style.maxWidth='100%';
   const HW=7.5,L=28,RH=3.05,TEAM=3,GAME=150,SHOT=14;
   const hoopZ=t=>t===0?L-1.6:1.6;            // the hoop each team attacks
   const rnd=(a,b)=>a+Math.random()*(b-a),cl=(v,a,b)=>v<a?a:v>b?b:v,dist=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
   const players=[];
-  for(let t=0;t<2;t++)for(let i=0;i<TEAM;i++)players.push({t,i,x:0,z:0,y:0,vy:0,face:t?Math.PI:0,walk:0,cd:0,stun:0,spin:0,act:null,at:0,tx:0,tz:0,think:0,block:0,swipe:0});
+  for(let t=0;t<2;t++)for(let i=0;i<TEAM;i++)players.push({t,i,x:0,z:0,y:0,vy:0,face:t?Math.PI:0,walk:0,cd:0,stun:0,spin:0,act:null,at:0,tx:0,tz:0,think:0,block:0,swipe:0,cross:0,crossT:0,hand:1,cvx:0,cvz:0,sure:false});
   const team=t=>players.filter(p=>p.t===t),mark=p=>players.find(q=>q.t!==p.t&&q.i===p.i);
-  let score=[0,0],clock=GAME,shotClock=SHOT,owner=null,me=players[0],ball={x:0,y:1,z:14},fly=null,msg='',msgT=0,pause=0,over=false,extra=false,made=0,tried=0,lastTouch=0,focus=14,camX=0;
+  let score=[0,0],clock=GAME,shotClock=SHOT,owner=null,me=players[0],ball={x:0,y:1,z:14},fly=null,msg='',msgT=0,pause=0,over=false,extra=false,made=0,tried=0,lastTouch=0,focus=14,camX=0,poss=0,cool=0,win=0;   // cool: 360 shot cooldown, win: time left to shoot out of a 360
   const say=(t,n)=>{msg=t;msgT=n||80};
 
   function give(p){
     if(lastTouch!==p.t||(fly&&fly.rebound))shotClock=SHOT;
-    owner=p;fly=null;lastTouch=p.t;p.think=rnd(.5,1.1);
-    if(p.t===0)me=p;else if(!practice)me=mark(p);
+    owner=p;fly=null;lastTouch=p.t;p.think=rnd(.5,1.1);win=0;
+    if(p.t===0)me=p;else if(!practice&&poss!==1)me=mark(p);
+    poss=p.t;
   }
   function setup(t){   // team t brings the ball in
     players.forEach(p=>{
       const off=p.t===t,base=off?hoopZ(1-t):hoopZ(t),dir=base<L/2?1:-1;
       p.x=[0,-4.5,4.5][p.i];
       p.z=off?base+dir*[7,5,5][p.i]:hoopZ(t)+(hoopZ(t)<L/2?1:-1)*[10,8,8][p.i];
-      p.y=p.vy=p.cd=p.stun=p.spin=p.block=p.swipe=0;p.act=null;p.face=hoopZ(p.t)>p.z?0:Math.PI;p.tx=p.x;p.tz=p.z;
+      p.y=p.vy=p.cd=p.stun=p.spin=p.block=p.swipe=p.cross=p.crossT=0;p.sure=false;p.act=null;p.face=hoopZ(p.t)>p.z?0:Math.PI;p.tx=p.x;p.tz=p.z;
     });
     if(practice){players.forEach(p=>{if(p.t===1){p.x=[0,-3,3][p.i];p.z=hoopZ(0)-[3,5,5][p.i];p.face=Math.PI}});players[0].x=0;players[0].z=hoopZ(0)-9}
     owner=null;give(players.find(p=>p.t===t&&p.i===0));shotClock=SHOT;
@@ -781,12 +782,15 @@ function basketball(el,practice){
 
   /* ---- actions ---- */
   const busy=p=>p.stun>0||p.act;
+  const turn=p=>p.spin>0?(1-p.spin/.55)*Math.PI*2:0;
   const isThree=(p,t)=>{const dz=Math.abs(p.z-hoopZ(t));return Math.hypot(p.x,dz)>6.75||Math.abs(p.x)>6.6};
-  function startShot(p,spin){
+  function startShot(p){
     if(owner!==p||busy(p))return;
-    const d=Math.hypot(p.x,p.z-hoopZ(p.t)),dunk=d<(spin?3.4:1.9);
+    const sure=p===me&&p.t===0&&win>0&&cool<=0;   // a 360 shot: always goes in, then 15 seconds to recharge
+    if(sure){cool=15;win=0;say('360 SHOT!',45)}
+    const d=Math.hypot(p.x,p.z-hoopZ(p.t)),dunk=d<(sure?3.4:1.9);
     p.act=dunk?'dunk':'shot';p.at=0;p.vy=dunk?5.2:4.4;p.face=Math.atan2(-p.x,hoopZ(p.t)-p.z);
-    p.spinShot=!!spin;p.release=p.t===0&&p===me?null:rnd(.28,.55);p.from={x:p.x,z:p.z};
+    p.sure=sure;p.release=p.t===0&&p===me?null:rnd(.28,.55);p.from={x:p.x,z:p.z};
   }
   function release(p){
     const hz=hoopZ(p.t),d=Math.hypot(p.x,p.z-hz),dunk=p.act==='dunk',pts=isThree(p.from,p.t)?3:2;
@@ -794,15 +798,15 @@ function basketball(el,practice){
     let ch=dunk?.96:d<3?.78:d<6.75?.56:d<9?.42:.1;
     if(!dunk)ch*=err<.08?1.35:err<.17?1:err<.28?.7:.4;
     const near=team(1-p.t).reduce((m,q)=>Math.min(m,practice?9:dist(p,q)),9);
-    if(near<1.9)ch*=p.spinShot?.82:.62;
+    if(near<1.9)ch*=.62;
     if(p.t===1)ch*=.9;
-    const good=Math.random()<Math.min(.97,ch);
+    const good=p.sure||Math.random()<Math.min(.97,ch);
     if(p.t===0){tried++}
     const a=rnd(0,6.283),off=good?0:rnd(.25,.45);
     fly={type:'shot',by:p,good,pts,t:0,dur:dunk?.22:.55+d*.055,x0:p.x,y0:p.y+2.3,z0:p.z,x1:Math.cos(a)*off,y1:RH+(good?.05:.1),z1:hz+Math.sin(a)*off,arc:dunk?.25:1.2+d*.14,
-      label:dunk?(p.spinShot?'360 DUNK!':'DUNK!'):pts===3?'THREE!':'BUCKET!',perfect:!dunk&&err<.08};
-    owner=null;lastTouch=p.t;p.act='land';
-    if(p.t===0&&p===me&&!dunk)say(err<.08?'Perfect release':err<.17?'Good release':p.at<.4?'Too early':'Too late',45);
+      label:p.sure?(dunk?'360 DUNK!':'360 SHOT!'):dunk?'DUNK!':pts===3?'THREE!':'BUCKET!',perfect:!dunk&&!p.sure&&err<.08};
+    owner=null;lastTouch=p.t;p.act='land';p.sure=false;
+    if(p.t===0&&p===me&&!dunk&&!p.sure)say(err<.08?'Perfect release':err<.17?'Good release':p.at<.4?'Too early':'Too late',45);
   }
   function loose(vx,vy,vz){fly={type:'loose',vx,vy,vz,t:0};owner=null}
   function pass(p){
@@ -815,7 +819,7 @@ function basketball(el,practice){
     };
     const q=mates.sort((a,b)=>score_(b)-score_(a))[0];
     fly={type:'pass',by:p,to:q,t:0,dur:Math.max(.18,dist(p,q)/17),x0:p.x,y0:1.4,z0:p.z,tried:[]};
-    owner=null;lastTouch=p.t;p.cd=.3;
+    owner=null;lastTouch=p.t;p.cd=.3;win=0;
   }
   function block(p){
     if(p.cd>0||busy(p)||owner===p)return;
@@ -830,11 +834,29 @@ function basketball(el,practice){
     if(o.spin>0||o.act){p.stun=.35;return}
     if(Math.random()<(p.t===0?.38:.2)){give(p);o.stun=.5;p.cd=.6;say(p.t===0?'STEAL!':'Stolen!',60)}else p.stun=.28;
   }
-  function spin(p){
-    if(owner!==p||busy(p)||p.cd>0)return;
-    if(Math.hypot(p.x,p.z-hoopZ(p.t))<3.4){p.spin=.6;startShot(p,true);return}
-    p.spin=.55;p.cd=1.1;
-    team(1-p.t).forEach(q=>{if(!practice&&dist(p,q)<1.6&&Math.random()<.6)q.stun=.5});
+  function spin(p){   // just turns the player right round
+    if(owner!==p||busy(p)||p.spin>0)return;
+    p.spin=.55;
+    if(p===me&&p.t===0&&cool<=0)win=1.2;
+  }
+  function crossover(p){   // quick switch of hands and a burst to the side
+    if(owner!==p||busy(p)||p.crossT>0)return;
+    const rx=Math.cos(p.face),rz=-Math.sin(p.face);
+    let side=-p.hand;
+    if(p===me){const lean=joyX*rx+joyY*rz;if(Math.abs(lean)>.35)side=Math.sign(lean)}
+    p.hand=side;p.cross=.3;p.crossT=1.2;p.cvx=rx*side;p.cvz=rz*side;
+    let broke=false;
+    team(1-p.t).forEach(q=>{if(!practice&&dist(p,q)<1.8&&Math.random()<(p.t===0?.5:.3)){q.stun=.7;broke=true}});
+    if(broke&&p.t===0)say('Ankle breaker!',50);
+  }
+  function blockSteal(p){   // block a shot, otherwise go for the ball if it is in reach
+    const o=owner;
+    if(o&&o.t!==p.t&&!o.act&&dist(p,o)<1.7)steal(p);else block(p);
+  }
+  function passSwitch(){
+    if(owner===me)return pass(me);
+    if((owner&&owner.t===0)||(fly&&fly.type==='pass'&&fly.by.t===0))return;
+    me=team(0).filter(q=>q!==me).sort((a,b)=>dist(a,ball)-dist(b,ball))[0];
   }
   function scored(f){
     const t=f.by.t;score[t]+=f.pts;if(t===0){made++;setScore(score[0])}
@@ -852,23 +874,23 @@ function basketball(el,practice){
   let joyX=0,joyY=0;
   const K={},ui=document.createElement('div');ui.style.cssText='display:flex;justify-content:space-between;align-items:center;gap:12px;width:100%;max-width:480px';
   const stick=joystick(ui,(jx,jy)=>{joyX=-jx||0;joyY=-jy||0});
-  const grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(2,1fr);gap:8px;flex:1;max-width:220px';ui.appendChild(grid);
+  const grid=document.createElement('div');grid.style.cssText='display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px;flex:1;max-width:220px';ui.appendChild(grid);
   const live=()=>!over&&pause<=0;
   const doShoot=()=>{if(live()&&owner===me)startShot(me,false)};
   const letGo=()=>{if(me.act==='shot'&&owner===me&&me.at>.06)release(me);else if(me.act==='shot'&&owner===me)me.release=.12};
   const btns={};
-  [['shoot','🏀 Shoot',doShoot,letGo],['spin','🌀 360',()=>live()&&spin(me)],['block','✋ Block',()=>live()&&block(me)],['steal','🖐 Steal',()=>live()&&steal(me)],['pass','➜ Pass',()=>live()&&pass(me)]].forEach(([k,t,on,off])=>{
+  [['shoot','🏀 Shoot',doShoot,letGo],['spin','🌀 360',()=>live()&&spin(me)],['cross','Crossover',()=>live()&&crossover(me)],['block','Block/Steal',()=>live()&&blockSteal(me)],['pass','Pass / Switch',()=>live()&&passSwitch()]].forEach(([k,t,on,off])=>{
     const b=document.createElement('button');b.type='button';b.textContent=t;
-    b.style.cssText='user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none;padding:14px 4px;font-size:16px'+(k==='pass'?';grid-column:1/-1':'');
+    b.style.cssText='user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none;padding:0 2px;height:44px;white-space:nowrap;font-size:12px;min-width:0'+(k==='pass'?';grid-column:1/-1':'');
     b.onpointerdown=e=>{e.preventDefault();try{b.setPointerCapture(e.pointerId)}catch(_){}on()};
     if(off)b.onpointerup=b.onpointercancel=off;
     b.oncontextmenu=e=>e.preventDefault();btns[k]=b;grid.appendChild(b);
   });
   el.appendChild(ui);
   const hint=document.createElement('div');hint.style.cssText='font-size:12px;color:var(--mut);text-align:center;max-width:480px';
-  hint.textContent='Hold Shoot and let go at the top of your jump. 360 near the hoop is a dunk. Keyboard: arrows, Space shoot, X 360, C pass, B block, V steal.';el.appendChild(hint);
+  hint.textContent='Hold Shoot and let go at the top of your jump. Tap 360, then Shoot, for a shot that always goes in (once every 15 seconds). Keyboard: arrows, Space shoot, X 360, Z crossover, B block/steal, C pass/switch.';el.appendChild(hint);
   const DIR={arrowleft:'l',a:'l',arrowright:'r',d:'r',arrowup:'u',w:'u',arrowdown:'d',s:'d'};
-  const ACT={' ':'shoot',x:'spin',c:'pass',b:'block',v:'steal'};
+  const ACT={' ':'shoot',x:'spin',z:'cross',c:'pass',b:'block',v:'block'};
   const kd=e=>{const k=e.key.toLowerCase();if(DIR[k]){K[DIR[k]]=1;e.preventDefault()}else if(ACT[k]){e.preventDefault();if(!e.repeat)btns[ACT[k]].onpointerdown({preventDefault(){}})}};
   const ku=e=>{const k=e.key.toLowerCase();if(DIR[k])K[DIR[k]]=0;else if(k===' '){e.preventDefault();letGo()}};
   const blur=()=>{for(const k in K)K[k]=0};
@@ -893,10 +915,10 @@ function basketball(el,practice){
       const d=Math.hypot(p.x,p.z-hz),gd=dist(p,guard);
       if(p.think<=0){
         p.think=rnd(.35,.7);
-        if(d<2)return startShot(p,Math.random()<.35);
+        if(d<2)return startShot(p);
         if(shotClock<3&&d<10)return startShot(p);
         if(d<8.2&&gd>1.9&&Math.random()<.55)return startShot(p);
-        if(gd<1.5){const r=Math.random();if(r<.35)return pass(p);if(r<.55)return spin(p)}
+        if(gd<1.5){const r=Math.random();if(r<.35)return pass(p);if(r<.55)return crossover(p)}
         else if(Math.random()<.18)return pass(p);
         p.tx=rnd(-4,4);p.tz=hz+dir*rnd(1,7);
       }
@@ -917,13 +939,15 @@ function basketball(el,practice){
     if(msgT>0)msgT--;
     if(over)return;
     if(pause>0){pause-=dt;return}
+    cool=Math.max(0,cool-dt);win=Math.max(0,win-dt);
     if(!practice){
       if(!extra){clock-=dt;if(clock<=0){clock=0;
         if(!(fly&&fly.type==='shot')){if(score[0]===score[1]){extra=true;say('Tie! Next basket wins',130)}else return finish()}}}
       if(owner){shotClock-=dt;if(shotClock<=0){const t=1-owner.t;say('Shot clock!',70);setup(t);pause=1;return}}
     }
     players.forEach(p=>{
-      p.cd=Math.max(0,p.cd-dt);p.stun=Math.max(0,p.stun-dt);p.spin=Math.max(0,p.spin-dt);p.block=Math.max(0,p.block-dt);p.swipe=Math.max(0,p.swipe-dt);
+      p.cd=Math.max(0,p.cd-dt);p.stun=Math.max(0,p.stun-dt);p.spin=Math.max(0,p.spin-dt);p.block=Math.max(0,p.block-dt);p.swipe=Math.max(0,p.swipe-dt);p.crossT=Math.max(0,p.crossT-dt);
+      if(p.cross>0){p.cross=Math.max(0,p.cross-dt);if(!p.act){p.x=cl(p.x+p.cvx*6.5*dt,-HW+.4,HW-.4);p.z=cl(p.z+p.cvz*6.5*dt,.5,L-.5)}}
       if(p.y>0||p.vy>0){p.vy-=11*dt;p.y+=p.vy*dt;if(p.y<=0){p.y=p.vy=0;if(p.act==='land')p.act=null}}
       else if(p.act==='land')p.act=null;
       if(practice&&p.t===1)return;
@@ -937,7 +961,7 @@ function basketball(el,practice){
       if(p.stun>0)return;
       if(p===me){
         let jx=joyX+(K.l?1:0)-(K.r?1:0),jz=joyY+(K.u?1:0)-(K.d?1:0);
-        move(p,jx,jz,owner===p?(p.spin>0?6.4:4.9):5.3,dt);
+        move(p,jx,jz,owner===p?4.9:5.3,dt);
       }else brain(p,dt);
     });
     // keep bodies apart
@@ -947,16 +971,16 @@ function basketball(el,practice){
     }
     // blocks: a jumping defender next to the shooter, right as the ball goes up
     const swatter=(s)=>players.find(q=>q.t!==s.t&&q.block>0&&q.y>.35&&dist(q,s)<1.7);
-    if(owner&&(owner.act==='shot'||owner.act==='dunk')&&owner.at>.14){
+    if(owner&&!owner.sure&&(owner.act==='shot'||owner.act==='dunk')&&owner.at>.14){
       const s=owner,q=swatter(s);
       if(q&&!q.tried){q.tried=true;if(Math.random()<(q.t===0?.7:.45)*(s.act==='dunk'?.6:1)){s.act='land';lastTouch=q.t;loose((s.x-q.x)*3+rnd(-2,2),2.5,(s.z-q.z)*3+rnd(-2,2));fly.t=-.1;say(q.t===0?'BLOCKED! ✋':'Blocked!',70)}}
     }
     players.forEach(q=>{if(q.block<=0)q.tried=false});
     // ball
     if(owner){
-      const p=owner,f=p.face+(p.spin>0?p.spin*11.4:0),up=p.act?1:0;
-      ball.x=p.x+Math.sin(f)*.35+Math.cos(f)*(up?0:.35);ball.z=p.z+Math.cos(f)*.35-Math.sin(f)*(up?0:.35);
-      ball.y=up?p.y+2.25:.2+Math.abs(Math.sin(p.walk*.8+clock*7))*.85;
+      const p=owner,f=p.face+turn(p),up=p.act?1:0,side=up?0:.4*p.hand*(1-2*p.cross/.3);
+      ball.x=p.x+Math.sin(f)*.35+Math.cos(f)*side;ball.z=p.z+Math.cos(f)*.35-Math.sin(f)*side;
+      ball.y=up?p.y+2.25:p.cross>0?.2+Math.abs(p.cross-.15)*2.5:.2+Math.abs(Math.sin(p.walk*.8+clock*7))*.85;
     }else if(fly){
       fly.t+=dt;
       if(fly.type==='shot'){
@@ -1038,7 +1062,7 @@ function basketball(el,practice){
   }
   const FACES=[[0,1,3,2],[5,4,6,7],[4,0,2,6],[1,5,7,3],[2,3,7,6],[4,5,1,0]],LIGHT=[.72,1,.82,.9,1.15,.55];
   function figure(p){
-    const f=p.face+(p.spin>0?(.6-p.spin)*11.4:0),s=Math.sin(f),co=Math.cos(f);
+    const f=p.face+turn(p),s=Math.sin(f),co=Math.cos(f);
     const W3=(lx,ly,lz)=>[p.x+lx*co+lz*s,p.y+ly,p.z-lx*s+lz*co];
     const faces=[];
     const box=(cx,y0,y1,cz,w,d,col,swing)=>{
@@ -1086,7 +1110,9 @@ function basketball(el,practice){
     if(msgT>0&&!over)text(msg,W/2,92,26,'#ffe066');
     if(over){ov(x,W,H,msg);text('Tap Restart to play again',W/2,H/2+34,15)}
     const off=owner===me;
-    ['shoot','spin','pass'].forEach(k=>btns[k].style.opacity=off?1:.4);['block','steal'].forEach(k=>btns[k].style.opacity=off?.4:1);
+    ['shoot','spin','cross'].forEach(k=>btns[k].style.opacity=off?1:.4);btns.block.style.opacity=off?.4:1;
+    const st=cool>0?'🌀 360 ⏳'+Math.ceil(cool)+'s':'🌀 360';if(btns.spin.textContent!==st)btns.spin.textContent=st;
+    if(off&&win>0&&!me.act&&mv[2]>.5){const s=scr(mv);text('SHOOT NOW!',s[0],s[1]-18,16,'#4cd4a0')}
   }
   function camera(dt){
     const k=Math.min(1,dt*3.5);focus+=(cl(ball.z,4.5,L-6)-focus)*k;camX+=(ball.x*.45-camX)*k;camZ=focus-BACK;
