@@ -22,6 +22,7 @@ Any host that can run a Node app will work. Free plans change often, so check th
 6. Send that link to your friends. They sign up, add each other, and chat.
 
 ## Good to know
+- **Nicknames:** tap **✏️ Add nickname** under a name in Friends (or **✏️ Nickname** in a chat) to rename someone for yourself only. Their username doesn't change. Leave it empty to remove it.
 - **Friends and chat:** adding a friend is one-way until the other person adds you back. Chat unlocks once you've both added each other, so strangers can't message you.
 - **Saved data (important on free hosts):** by default everything is saved in a file next to the server. Free hosts wipe their files when the app sleeps or restarts, and then every account, score and chat disappears (people see "Wrong username or password" and have to sign up again). To stop that, connect a free Upstash Redis database:
   1. Make a free account at upstash.com and create a Redis database (pick the free plan).

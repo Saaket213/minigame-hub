@@ -183,6 +183,8 @@ const store={
 let accounts=store.get('mg_acc',{}),acct=store.get('mg_sess',null),user=null,best={},keys=null,cleanup=null,cur=null;
 if(acct&&accounts[acct]){user={name:accounts[acct].name,bio:accounts[acct].bio};best=accounts[acct].best||{}}else acct=null;
 
+let nicks={};
+const label=n=>nicks[String(n||'').toLowerCase()]||n;
 function view(n){['login','hub','game','settings','friends','chat','board'].forEach(v=>$('#'+v).classList.toggle('hidden',v!==n))}
 function setScore(n,l){$('#score').textContent=(l||'Score')+' '+n}
 function end(g,s){if(s>(best[g]||0)){best[g]=s;if(acct){accounts[acct].best=best;store.set('mg_acc',accounts)}}}
@@ -1537,7 +1539,7 @@ async function renderB(){
   rows.forEach((r,i)=>{
     const row=document.createElement('div');row.className='fr'+(user&&r.name===user.name?' me':'');
     const rk=document.createElement('div');rk.className='rk';rk.textContent=['🥇','🥈','🥉'][i]||(i+1);
-    const nm=document.createElement('div');nm.className='i';const b=document.createElement('b');b.textContent=r.name;
+    const nm=document.createElement('div');nm.className='i';const b=document.createElement('b');b.textContent=label(r.name);
     if(r.owner){const o=document.createElement('span');o.className='owner';o.textContent='👑 OWNER';b.append(' ',o)}
     nm.appendChild(b);
     const sc=document.createElement('b');sc.textContent=r.score;sc.style.fontSize='18px';
@@ -1563,7 +1565,7 @@ const api=async(p,body)=>{
   const j=await r.json().catch(()=>({}));
   if(!r.ok)throw new Error(j.error||'Something went wrong');
   return j};
-const applyMe=me=>{user={name:me.name,bio:me.bio,avatar:me.avatar||''};best=me.best||{};isOwner=!!me.owner;acct=null};
+const applyMe=me=>{nicks=me.nicks||{};user={name:me.name,bio:me.bio,avatar:me.avatar||''};best=me.best||{};isOwner=!!me.owner;acct=null};
 const mk=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
 const lost=()=>{tok=null;try{localStorage.removeItem('mg_tok')}catch(e){}};
 const frb=$('#frb'),ftitle=document.querySelector('#friends .bar .t');
@@ -1608,6 +1610,16 @@ $('#sunb').onclick=async()=>{
   catch(e){bad(e.message)}
 };
 
+/* nicknames: private labels, usernames stay the same */
+async function editNick(name,done){
+  const v=prompt('Nickname for '+name+' (only you see it). Leave empty to remove it.',nicks[name.toLowerCase()]||'');
+  if(v===null)return;
+  try{nicks=(await api('nick',{name,nick:v})).nicks;done()}catch(e){alert(e.message)}
+}
+const nickBtn=(name,done)=>{
+  const b=mk('button','ghost',nicks[name.toLowerCase()]?'✏️ Edit nickname':'✏️ Add nickname');b.type='button';
+  b.style.cssText='display:block;margin-top:4px;padding:2px 8px;font-size:11px;min-width:0';b.onclick=()=>editNick(name,done);return b};
+
 /* friends */
 $('#flab').style.display='none';$('#fdev').style.display='none';
 const fnote=document.querySelector('#friends p[style]');if(fnote)fnote.textContent='💬 Message anyone by username. Calls and groups still need you to add each other.';
@@ -1631,17 +1643,18 @@ renderF=async function(){
   if(D.length){
     const h=mk('b',null,'📩 Messages');h.style.cssText='display:block;margin:4px 0';box.appendChild(h);
     D.forEach(x=>{
-      const row=mk('div','fr'),av=avEl(x.avatar,x.name),info=mk('div','i'),b=mk('b',null,x.name);
+      const row=mk('div','fr'),av=avEl(x.avatar,label(x.name)),info=mk('div','i'),b=mk('b',null,label(x.name));
       if(x.owner)b.append(' ',mk('span','owner','👑 OWNER'));
       info.append(b,mk('small',null,x.blocked?'Blocked':(x.mine?'You: ':'')+x.text));
       const o=mk('button',null,'Open'+(x.unread?' ('+x.unread+')':''));o.onclick=()=>openChat(x.name);
+      info.appendChild(nickBtn(x.name,renderF));row.style.flexWrap='wrap';
       row.append(av,info,o);box.appendChild(row);
     });
   }
   if(R.length){
     const h=mk('b',null,'Friend requests ('+R.length+')');h.style.cssText='display:block;margin:4px 0';box.appendChild(h);
     R.forEach(r=>{
-      const row=mk('div','fr'),av=avEl(r.avatar,r.name),info=mk('div','i'),b=mk('b',null,r.name);
+      const row=mk('div','fr'),av=avEl(r.avatar,label(r.name)),info=mk('div','i'),b=mk('b',null,label(r.name));
       if(r.owner)b.append(' ',mk('span','owner','👑 OWNER'));
       info.append(b,mk('small',null,(r.bio||'No bio')+' · wants to be your friend'));
       const ac=mk('button',null,'Accept');ac.onclick=async()=>{try{await api('friends/add',{name:r.name});renderF()}catch(e){}};
@@ -1652,9 +1665,10 @@ renderF=async function(){
   if(R.length||D.length){const h2=mk('b',null,'Your friends');h2.style.cssText='display:block;margin:14px 0 4px';box.appendChild(h2);}
   if(!L.length)note('No friends yet — add one above!');
   L.forEach(f=>{
-    const row=mk('div','fr'),av=avEl(f.avatar,f.name),info=mk('div','i'),b=mk('b',null,f.name);
+    const row=mk('div','fr'),av=avEl(f.avatar,label(f.name)),info=mk('div','i'),b=mk('b',null,label(f.name));
     if(f.owner)b.append(' ',mk('span','owner','👑 OWNER'));
     info.append(b,mk('small',null,(f.bio||'No bio')+' · Total score '+f.total+' · '+(f.mutual?'Friends ✓':'Waiting for them to add you back')));
+    info.appendChild(nickBtn(f.name,renderF));row.style.flexWrap='wrap';info.style.minWidth='140px';
     row.append(av,info);
     const cb=mk('button',null,'💬 Chat'+(f.unread?' ('+f.unread+')':''));cb.onclick=()=>openChat(f.name);row.append(cb);
     if(f.mutual){const cl=mk('button',null,'📞 Call');cl.onclick=()=>startCall(f.name);row.append(cl)}
@@ -1685,7 +1699,7 @@ const drawC=ms=>{
 let isBlocked=false;
 const loadC=async()=>{const n=cName;try{const j=await api('chat?with='+encodeURIComponent(n));if(n!==cName)return;isBlocked=j.blocked;blk2.textContent=isBlocked?'Unblock':'🚫 Block';drawC(j.msgs)}catch(e){}};
 openChat=function(name){
-  cName=name;shown=null;cerr.textContent='';$('#cin').value='';$('#ct').textContent='💬 '+name;$('#cmsgs').innerHTML='';view('chat');loadC();
+  cName=name;shown=null;cerr.textContent='';$('#cin').value='';$('#ct').textContent='💬 '+label(name);$('#cmsgs').innerHTML='';view('chat');loadC();
   clearInterval(poll);poll=setInterval(()=>{if($('#chat').classList.contains('hidden'))clearInterval(poll);else loadC()},2500);
   setTimeout(()=>$('#cin').focus(),50);
 };
@@ -1736,7 +1750,7 @@ function ring(on,mode,who){
   if(inc){
     const buzz=()=>{if(navigator.vibrate)try{navigator.vibrate([600,250,600,250,600])}catch(e){}};
     buzz();vibIv=setInterval(buzz,3000);
-    let flip=false;titleIv=setInterval(()=>{flip=!flip;document.title=flip?'📞 '+(who||'Someone')+' is calling…':baseTitle},900);
+    let flip=false;titleIv=setInterval(()=>{flip=!flip;document.title=flip?'📞 '+(label(who)||'Someone')+' is calling…':baseTitle},900);
   }
 }
 function endCall(msg,notify){
@@ -1746,7 +1760,7 @@ function endCall(msg,notify){
   if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;
   $('#raudio').srcObject=null;
   const who=peer;peer=null;state='idle';pend=null;ice=[];muted=false;
-  if(msg){ui('📞 '+(who||'Call'),msg,[['OK',()=>cbx.classList.add('hidden')]]);setTimeout(()=>{if(state==='idle')cbx.classList.add('hidden')},4000)}
+  if(msg){ui('📞 '+(label(who)||'Call'),msg,[['OK',()=>cbx.classList.add('hidden')]]);setTimeout(()=>{if(state==='idle')cbx.classList.add('hidden')},4000)}
   else cbx.classList.add('hidden');
 }
 async function makePC(){
@@ -1765,26 +1779,26 @@ async function makePC(){
 function liveBtns(){return[[muted?'🔇 Unmute':'🎙 Mute',toggleMute],['Hang up',()=>endCall('Call ended.',true),1]]}
 function goLive(){
   state='live';ring(false);clearTimeout(ringTO);t0=Date.now();
-  ui('📞 '+peer,'In call · 0:00',liveBtns());
+  ui('📞 '+label(peer),'In call · 0:00',liveBtns());
   tick=setInterval(()=>{$('#cstat').textContent='In call · '+fmt(Date.now()-t0)},1000);
 }
 function toggleMute(){
   muted=!muted;if(stream)stream.getAudioTracks().forEach(t=>t.enabled=!muted);
-  ui('📞 '+peer,$('#cstat').textContent,liveBtns());
+  ui('📞 '+label(peer),$('#cstat').textContent,liveBtns());
 }
 async function flush(){const c=ice;ice=[];for(const x of c)await pc.addIceCandidate(x).catch(()=>{})}
 async function startCall(name){
   if(state!=='idle')return;
   if(!navigator.mediaDevices||!window.RTCPeerConnection){ui('📞 Calls','Calls aren’t supported in this browser.',[['OK',()=>cbx.classList.add('hidden')]]);return}
   peer=name;state='calling';
-  ui('📞 Calling '+name+'…','Waiting for them to answer',[['Cancel',()=>endCall('Call cancelled.',true),1]]);
+  ui('📞 Calling '+label(name)+'…','Waiting for them to answer',[['Cancel',()=>endCall('Call cancelled.',true),1]]);
   try{await makePC()}catch(e){endCall('Allow the microphone to make calls.',false);return}
   try{const o=await pc.createOffer();await pc.setLocalDescription(o);sig('offer',{type:o.type,sdp:o.sdp});ring(true,'out')}catch(e){endCall('Couldn’t start the call.',false);return}
   ringTO=setTimeout(()=>{if(state==='calling')endCall('No answer.',true)},45000);
 }
 async function accept(){
   ring(false);clearTimeout(ringTO);state='connecting';
-  ui('📞 '+peer,'Connecting…',[['Hang up',()=>endCall('Call ended.',true),1]]);
+  ui('📞 '+label(peer),'Connecting…',[['Hang up',()=>endCall('Call ended.',true),1]]);
   try{await makePC()}catch(e){sig('decline');endCall('Allow the microphone to take calls.',false);return}
   if(!pc)return;
   try{await pc.setRemoteDescription(pend);await flush();const a=await pc.createAnswer();await pc.setLocalDescription(a);sig('answer',{type:a.type,sdp:a.sdp})}
@@ -1794,15 +1808,15 @@ async function onSignal(s){
   if(s.type==='offer'){
     if(state!=='idle'){api('call/send',{to:s.from,type:'decline',data:'busy'}).catch(()=>{});return}
     peer=s.from;state='ringing';pend=s.data;
-    ui('📞 '+s.from+' is calling you','Incoming voice call',[['Accept',accept],['Decline',()=>{sig('decline');endCall(null)},1]]);
-    ring(true,'in',s.from);ringTO=setTimeout(()=>{if(state==='ringing')endCall('Missed call from '+peer+'.',false)},45000);
+    ui('📞 '+label(s.from)+' is calling you','Incoming voice call',[['Accept',accept],['Decline',()=>{sig('decline');endCall(null)},1]]);
+    ring(true,'in',s.from);ringTO=setTimeout(()=>{if(state==='ringing')endCall('Missed call from '+label(peer)+'.',false)},45000);
     return;
   }
   if(s.from!==peer)return;
   if(s.type==='answer'&&pc){try{await pc.setRemoteDescription(s.data);await flush()}catch(e){}}
   else if(s.type==='ice'){if(pc&&pc.remoteDescription)pc.addIceCandidate(s.data).catch(()=>{});else ice.push(s.data)}
-  else if(s.type==='hangup')endCall(state==='ringing'?'Missed call from '+peer+'.':'Call ended.',false);
-  else if(s.type==='decline')endCall(s.data==='busy'?peer+' is on another call.':peer+' declined the call.',false);
+  else if(s.type==='hangup')endCall(state==='ringing'?'Missed call from '+label(peer)+'.':'Call ended.',false);
+  else if(s.type==='decline')endCall(s.data==='busy'?label(peer)+' is on another call.':label(peer)+' declined the call.',false);
 }
 /* friend-request popup + count */
 const seenMsg={},seenG={};let gcur=null;
@@ -1820,20 +1834,20 @@ let toastGo=null;
 tv.onclick=()=>{tst.classList.add('hidden');if(typeof toastGo==='function')toastGo();else if(toastGo)openChat(toastGo);else{renderF();view('friends')}};
 const pollCalls=async()=>{
   try{
-    const j=await api('call/poll');
+    const j=await api('call/poll');nicks=j.nicks||nicks;
     for(const s of j.signals)await onSignal(s);
     const R=j.requests||[];setBadge(R.length);
     const fresh=R.filter(n=>!seenReq.has(n));
     if(fresh.length){
       fresh.forEach(n=>seenReq.add(n));
       try{localStorage.setItem('mg_seenreq',JSON.stringify([...seenReq].slice(-100)))}catch(e){}
-      toast('👋 '+(fresh.length===1?fresh[0]+' sent you a friend request':fresh.length+' new friend requests'));
+      toast('👋 '+(fresh.length===1?label(fresh[0])+' sent you a friend request':fresh.length+' new friend requests'));
     }
     const un=j.unread||[];setUnread(un.reduce((a,x)=>a+x.count,0));
     const chatOpen=!$('#chat').classList.contains('hidden');
     const newMsgs=un.filter(x=>x.id>(seenMsg[x.name]||0)&&!(chatOpen&&cName===x.name));
     un.forEach(x=>{seenMsg[x.name]=Math.max(seenMsg[x.name]||0,x.id)});
-    if(newMsgs.length===1)toast('💬 '+newMsgs[0].name+': '+newMsgs[0].text,newMsgs[0].name);
+    if(newMsgs.length===1)toast('💬 '+label(newMsgs[0].name)+': '+newMsgs[0].text,newMsgs[0].name);
     else if(newMsgs.length>1)toast('💬 '+newMsgs.reduce((a,x)=>a+x.count,0)+' new messages from '+newMsgs.length+' people');
     const gu=j.gunread||[];setGU(gu.reduce((a,x)=>a+x.count,0));
     const gOpen=!$('#gchat').classList.contains('hidden');
@@ -1846,9 +1860,10 @@ const pollCalls=async()=>{
 const pollLoop=async()=>{if(tok&&(!document.hidden||state!=='idle'))await pollCalls();setTimeout(pollLoop,state==='idle'?3000:1000)};
 pollLoop();
 const cbar=document.querySelector('#chat .bar'),cb2=mk('button','ghost','📞 Call');cb2.onclick=()=>startCall(cName);cbar.appendChild(cb2);
+const nk2=mk('button','ghost','✏️ Nickname');nk2.onclick=()=>editNick(cName,()=>{$('#ct').textContent='💬 '+label(cName)});cbar.appendChild(nk2);
 const blk2=mk('button','ghost','🚫 Block');cbar.appendChild(blk2);
 blk2.onclick=async()=>{
-  if(!isBlocked&&!confirm('Block '+cName+'? They won’t be able to message you.'))return;
+  if(!isBlocked&&!confirm('Block '+label(cName)+'? They won’t be able to message you.'))return;
   try{await api('block',{name:cName,on:!isBlocked});cerr.textContent='';loadC()}catch(e){cerr.textContent=e.message}
 };
 
@@ -2034,7 +2049,7 @@ async function openNew(){
     const row=mk('label','fr');row.style.cssText='display:flex;align-items:center;gap:10px;margin:0;cursor:pointer;font-size:16px;color:var(--ink)';
     const cb=mk('input');cb.type='checkbox';cb.style.cssText='width:20px;height:20px;flex:none';
     cb.onchange=()=>{if(cb.checked)gnSel.add(f.name);else gnSel.delete(f.name)};
-    row.append(cb,avEl(f.avatar,f.name,36),mk('b',null,f.name));box.appendChild(row);
+    row.append(cb,avEl(f.avatar,label(f.name),36),mk('b',null,label(f.name)));box.appendChild(row);
   });
   view('gnew');
 }
@@ -2053,7 +2068,7 @@ function drawG(ms){
   if(!ms.length)mutedNote(box,'No messages yet. Say hi!');
   ms.forEach(m=>{
     const d=mk('div','bub'+(m.mine?' me':''));
-    if(!m.mine)d.appendChild(mk('span','gbub-n',m.from));
+    if(!m.mine)d.appendChild(mk('span','gbub-n',label(m.from)));
     d.appendChild(document.createTextNode(m.t));
     d.appendChild(mk('small',null,new Date(m.ts).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})));
     box.appendChild(d);
@@ -2106,16 +2121,16 @@ async function openInfo(){
   }else{const p=mk('p',null,'Only the group owner can change the name, photo and bio.');p.style.cssText='font-size:13px;color:var(--mut);margin:0';sv.appendChild(p)}
   const mem=$('#gmem');mem.innerHTML='';
   g.members.forEach(m=>{
-    const row=mk('div','fr'),info=mk('div','i'),b=mk('b',null,m.name);
+    const row=mk('div','fr'),info=mk('div','i'),b=mk('b',null,label(m.name));
     if(m.isOwner){const o=mk('span',null,' · owner');o.style.cssText='font-weight:400;color:var(--mut)';b.appendChild(o)}
-    info.appendChild(b);row.append(avEl(m.avatar,m.name,40),info);
+    info.appendChild(b);row.append(avEl(m.avatar,label(m.name),40),info);
     if(g.owner&&m.name!==user.name){const rm=mk('button','ghost','Remove');rm.onclick=async()=>{try{await api('group/remove',{id:gcur,name:m.name});openInfo()}catch(e){}};row.appendChild(rm)}
     mem.appendChild(row);
   });
   const ad2=$('#gadd');ad2.innerHTML='';
   let F=[];try{F=(await api('friends')).friends.filter(f=>f.mutual&&!g.members.some(m=>m.name===f.name))}catch(e){}
   $('#gaddl').style.display=F.length?'':'none';
-  F.forEach(f=>{const b=mk('button','ghost','+ '+f.name);b.onclick=async()=>{try{await api('group/add',{id:gcur,name:f.name});openInfo()}catch(e){er.style.color='var(--hot)';er.textContent=e.message}};ad2.appendChild(b)});
+  F.forEach(f=>{const b=mk('button','ghost','+ '+label(f.name));b.onclick=async()=>{try{await api('group/add',{id:gcur,name:f.name});openInfo()}catch(e){er.style.color='var(--hot)';er.textContent=e.message}};ad2.appendChild(b)});
   const lv=$('#gleave');lv.textContent='Leave group';lv.dataset.sure='';
   view('ginfo');
 }

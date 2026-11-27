@@ -74,7 +74,10 @@ const scrypt = (p, s) => new Promise((ok, no) => crypto.scrypt(p, s, 32, (e, k) 
 const byName = n => Object.values(db.users).find(u => u.name.toLowerCase() === String(n || '').trim().toLowerCase());
 const NAME = /^[\p{L}\p{N}_. -]{2,20}$/u;
 const isOwner = u => !!OWNER && u.name.toLowerCase() === OWNER;
-const me = u => ({ name: u.name, bio: u.bio, best: u.best, owner: isOwner(u), avatar: u.avatar || '' });
+// private nicknames: only the person who set one ever sees it
+const called = (viewer, x) => (viewer && viewer.nicks && viewer.nicks[x.id]) || x.name;
+const nickMap = u => Object.fromEntries(Object.entries(u.nicks || {}).filter(([id]) => db.users[id]).map(([id, n]) => [db.users[id].name.toLowerCase(), n]));
+const me = u => ({ nicks: nickMap(u), name: u.name, bio: u.bio, best: u.best, owner: isOwner(u), avatar: u.avatar || '' });
 const total = u => Object.values(u.best).reduce((a, b) => a + b, 0);
 const AV_OK = x => {
   if (typeof x !== 'string' || x.length > 12000 || !/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/.test(x)) return false;
@@ -100,7 +103,7 @@ const unreadGroups = u => Object.values(db.groups).filter(g => g.members.include
   const ms = (db.gchats[g.id] || []).filter(x => x.f !== u.id && x.id > r);
   if (!ms.length) return null;
   const l = ms[ms.length - 1], who = db.users[l.f];
-  return { gid: g.id, name: g.name, count: ms.length, text: (who ? who.name : '?') + ': ' + l.t.slice(0, 80), id: l.id };
+  return { gid: g.id, name: g.name, count: ms.length, text: (who ? called(u, who) : '?') + ': ' + l.t.slice(0, 80), id: l.id };
 }).filter(Boolean);
 
 const hits = {}, lastMsg = new Map(), mail = new Map();
@@ -234,6 +237,16 @@ async function route(req, res, url) {
     u.name = name; save();
     return send(res, 200, { me: me(u) });
   }
+  if (p === '/api/nick') {
+    const t = byName(b.name);
+    if (!t || t.id === u.id) throw new E(404, 'No player with that username.');
+    const n = String(b.nick || '').trim().slice(0, 20);
+    u.nicks = u.nicks || {};
+    if (n && !u.nicks[t.id] && Object.keys(u.nicks).length >= 200) throw new E(400, 'You have the maximum number of nicknames.');
+    if (n) u.nicks[t.id] = n; else delete u.nicks[t.id];
+    save();
+    return send(res, 200, { nicks: nickMap(u) });
+  }
   if (p === '/api/friends' && m === 'GET') {
     const un = Object.fromEntries(unreadFor(u).map(x => [x.name, x.count]));
     const friends = u.friends.map(id => db.users[id]).filter(Boolean)
@@ -247,7 +260,7 @@ async function route(req, res, url) {
     if (u.friends.includes(t.id)) throw new E(400, 'Already your friend.');
     if (u.friends.length >= 100) throw new E(400, 'Friend list is full.');
     u.friends.push(t.id); save();
-    if (!t.friends.includes(u.id)) pushTo(t, { title: '\uD83D\uDC4B Friend request', body: u.name + ' wants to be your friend', tag: 'req-' + u.id });
+    if (!t.friends.includes(u.id)) pushTo(t, { title: '\uD83D\uDC4B Friend request', body: called(t, u) + ' wants to be your friend', tag: 'req-' + u.id });
     return send(res, 200, { name: t.name, mutual: t.friends.includes(u.id) });
   }
   if (p === '/api/friends/remove') {
@@ -289,7 +302,7 @@ async function route(req, res, url) {
       lastMsg.set(u.id, Date.now());
       db.chats[k] = th;
       th.push({ id: ++db.mid, f: u.id, t: text, ts: Date.now() });
-      pushTo(t, { title: '\uD83D\uDCAC ' + u.name, body: text.slice(0, 100), tag: 'chat-' + u.id });
+      pushTo(t, { title: '\uD83D\uDCAC ' + called(t, u), body: text.slice(0, 100), tag: 'chat-' + u.id });
       if (th.length > 500) th.splice(0, th.length - 500);
       save();
       return send(res, 200, { ok: true });
@@ -328,7 +341,7 @@ async function route(req, res, url) {
   const gInfo = (g, full) => Object.assign({ id: g.id, name: g.name, bio: g.bio, avatar: g.avatar || '', owner: g.owner === u.id, count: g.members.length },
     full ? { members: g.members.map(id => db.users[id]).filter(Boolean).map(x => ({ name: x.name, avatar: x.avatar || '', isOwner: x.id === g.owner })) } : {});
   const gName = x => { const n = String(x || '').trim(); if (n.length < 1 || n.length > 30) throw new E(400, 'Group name must be 1 to 30 characters.'); return n; };
-  const gNotify = (g, ids, msg) => ids.forEach(id => pushTo(db.users[id], Object.assign({ tag: 'g-' + g.id }, msg)));
+  const gNotify = (g, ids, msg) => ids.forEach(id => pushTo(db.users[id], Object.assign({ tag: 'g-' + g.id }, typeof msg === 'function' ? msg(db.users[id]) : msg)));
   if (p === '/api/groups' && m === 'GET') {
     const un = Object.fromEntries(unreadGroups(u).map(x => [x.gid, x.count]));
     return send(res, 200, { groups: Object.values(db.groups).filter(g => g.members.includes(u.id)).map(g => Object.assign(gInfo(g), { unread: un[g.id] || 0 })) });
@@ -346,7 +359,7 @@ async function route(req, res, url) {
     const id = crypto.randomBytes(6).toString('hex');
     const g = db.groups[id] = { id, name, bio, avatar: av, owner: u.id, members: [u.id].concat(ids), created: Date.now() };
     db.gchats[id] = []; save();
-    gNotify(g, ids, { title: '\uD83D\uDC65 New group', body: u.name + ' added you to ' + name });
+    gNotify(g, ids, to => ({ title: '\uD83D\uDC65 New group', body: called(to, u) + ' added you to ' + name }));
     return send(res, 200, { group: gInfo(g, true) });
   }
   if (p === '/api/group' && m === 'GET') return send(res, 200, { group: gInfo(gOf(url.searchParams.get('id')), true) });
@@ -365,7 +378,7 @@ async function route(req, res, url) {
     if (g.members.includes(t.id)) throw new E(400, 'Already in the group.');
     if (g.members.length >= 50) throw new E(400, 'The group is full (50 members).');
     g.members.push(t.id); save();
-    gNotify(g, [t.id], { title: '\uD83D\uDC65 New group', body: u.name + ' added you to ' + g.name });
+    gNotify(g, [t.id], to => ({ title: '\uD83D\uDC65 New group', body: called(to, u) + ' added you to ' + g.name }));
     return send(res, 200, { group: gInfo(g, true) });
   }
   if (p === '/api/group/remove') {
@@ -393,7 +406,7 @@ async function route(req, res, url) {
       th.push({ id: ++db.mid, f: u.id, t: text, ts: Date.now() });
       if (th.length > 500) th.splice(0, th.length - 500);
       save();
-      gNotify(g, g.members.filter(x => x !== u.id), { title: '\uD83D\uDCAC ' + g.name, body: u.name + ': ' + text.slice(0, 100) });
+      gNotify(g, g.members.filter(x => x !== u.id), to => ({ title: '\uD83D\uDCAC ' + g.name, body: called(to, u) + ': ' + text.slice(0, 100) }));
       return send(res, 200, { ok: true });
     }
     const last = th.length ? th[th.length - 1].id : 0, rk = 'g:' + g.id + ':' + u.id;
@@ -412,13 +425,13 @@ async function route(req, res, url) {
     mail.set(t.id, box.slice(-100));
     if (type === 'offer') {
       ringing.set(t.id, { from: u.id, ts: Date.now() });
-      pushTo(t, { title: '\uD83D\uDCDE ' + u.name + ' is calling you', body: 'Tap to answer', call: true, tag: 'call' });
+      pushTo(t, { title: '\uD83D\uDCDE ' + called(t, u) + ' is calling you', body: 'Tap to answer', call: true, tag: 'call' });
     } else if (type === 'answer' || type === 'decline') ringing.delete(u.id);
     else if (type === 'hangup') {
       const r = ringing.get(t.id);
       if (r && r.from === u.id && Date.now() - r.ts < 60000) {
         ringing.delete(t.id);
-        pushTo(t, { title: '\uD83D\uDCF5 Missed call', body: u.name + ' called you', tag: 'call' });
+        pushTo(t, { title: '\uD83D\uDCF5 Missed call', body: called(t, u) + ' called you', tag: 'call' });
       }
     }
     return send(res, 200, { ok: true });
@@ -426,7 +439,7 @@ async function route(req, res, url) {
   if (p === '/api/call/poll') {
     const now = Date.now(), box = (mail.get(u.id) || []).filter(x => now - x.ts < 60000);
     mail.delete(u.id);
-    return send(res, 200, { signals: box, requests: incoming(u).slice(0, 50).map(x => x.name), unread: unreadFor(u), gunread: unreadGroups(u) });
+    return send(res, 200, { nicks: nickMap(u), signals: box, requests: incoming(u).slice(0, 50).map(x => x.name), unread: unreadFor(u), gunread: unreadGroups(u) });
   }
   throw new E(404, 'Not found');
 }
