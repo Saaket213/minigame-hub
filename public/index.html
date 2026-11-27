@@ -87,6 +87,9 @@ canvas{box-shadow:0 10px 30px rgba(91,91,240,.25)}
 .game.sport .e{border-radius:6px;font-size:36px;width:60px;height:60px}
 .owner.big{font-size:clamp(14px,3.4vw,24px);margin-left:14px;padding:4px 16px}
 @keyframes wave{0%,60%,100%{transform:rotate(0)}10%,30%{transform:rotate(16deg)}20%,40%{transform:rotate(-10deg)}50%{transform:rotate(8deg)}}
+.rank{display:inline-block;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:800;letter-spacing:1px;color:#fff;background:#6b6b76;vertical-align:middle}
+.rank.try{background:linear-gradient(135deg,#0b7fab,#5b5bf0)}
+.rank.god{background:linear-gradient(135deg,#b86e00,#e5383b,#8b2fd6);box-shadow:0 0 14px rgba(249,168,37,.8)}
 </style></head>
 <body><div class="fx"><i style="left:6%;top:14%;width:26px;height:26px;background:#ff5d5d"></i><i style="left:88%;top:10%;width:20px;height:20px;background:#f9c74f;animation-delay:-3s"></i><i style="left:14%;top:72%;width:30px;height:30px;background:#4cc9f0;animation-delay:-5s"></i><i style="left:80%;top:64%;width:24px;height:24px;background:#b388eb;animation-delay:-2s"></i><i style="left:46%;top:88%;width:18px;height:18px;background:#90be6d;animation-delay:-7s"></i><i style="left:62%;top:4%;width:16px;height:16px;background:#5b5bf0;animation-delay:-4s"></i></div><div class="wrap">
 
@@ -105,14 +108,16 @@ canvas{box-shadow:0 10px 30px rgba(91,91,240,.25)}
 </section>
 
 <section id="hub" class="hidden">
+  <div style="display:flex;justify-content:flex-end;margin-bottom:8px"><span class="rank" id="rank1"></span></div>
   <div class="logo" style="margin-bottom:16px"></div>
   <div class="hello" id="hello"></div>
   <div class="card prof">
     <div class="av" id="av"></div>
-    <div class="info"><b id="pn"></b><span class="owner hidden" id="ob1">👑 OWNER</span><small id="pb"></small></div>
+    <div class="info"><b id="pn"></b><span class="owner hidden" id="ob1">👑 OWNER</span> <span class="rank" id="rank2"></span><small id="pb"></small></div>
     <button class="ghost" id="lbb">🏆 Leaderboard</button><button class="ghost" id="frb">👥 Friends</button><button class="ghost" id="setb">⚙ Settings</button><button class="ghost" id="edit">Edit bio</button>
     <button class="ghost" id="out">Log out</button>
   </div>
+  <details class="card" id="goals" style="margin-bottom:18px"><summary style="cursor:pointer;font-weight:700"></summary><div></div></details>
   <div class="grid" id="games"></div>
 </section>
 
@@ -194,6 +199,22 @@ function pad(el,list){const d=document.createElement('div');d.className='pad';li
 document.addEventListener('keydown',e=>{if(!keys)return;if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key))e.preventDefault();keys(e.key)});
 
 /* ---------- profile ---------- */
+/* ---------- ranks ---------- */
+// score needed in each game to count as playing it well (for Try Hard)
+const GOALS={parkour:50,ttt:1,blocks:500,snake:10,memory:40,g2048:1000,flappy:5,mole:10,reaction:600,breakout:100,pong:5,simon:6,math:8,dodge:20,jet:10,football:1,basketball:10,volley:5,penalty:3,cricket:12,badminton:5};
+let godName=null;   // name of the signed-in player the server says is top of every leaderboard
+function renderRank(){
+  if(!user)return;
+  const left=GAMES.filter(x=>(best[x.id]||0)<GOALS[x.id]),done=GAMES.length-left.length;
+  const r=godName===user.name?['👑 GOD MODE','god']:!left.length?['🔥 TRY HARD','try']:['🐣 NOOB',''];
+  ['rank1','rank2'].forEach(id=>{const e=$('#'+id);e.textContent=r[0];e.className='rank '+r[1]});
+  const d=$('#goals');d.querySelector('summary').textContent='🎖️ Rank goals: '+done+' of '+GAMES.length+' games done';
+  const box=d.querySelector('div');box.innerHTML='';
+  const line=t=>{const p=document.createElement('p');p.style.cssText='margin:6px 0;font-size:14px';p.textContent=t;box.appendChild(p)};
+  line('🔥 Try Hard: reach the goal score in every game.');
+  line('👑 God Mode: be top of the leaderboard in every game (signed-in accounts only).');
+  left.forEach(x=>line(x.e+' '+x.n+': '+(best[x.id]||0)+' / '+GOALS[x.id]));
+}
 function showHub(){
   $('#av').textContent=user.name[0].toUpperCase();
   $('#pn').textContent=user.name;
@@ -209,7 +230,7 @@ function showHub(){
   GAMES.filter(x=>!x.sport).forEach(mkCard);
   const sph=document.createElement('div');sph.className='sporthead';sph.innerHTML='\ud83c\udfc5 SPORTS <small>Match or practice</small>';g.appendChild(sph);
   GAMES.filter(x=>x.sport).forEach(mkCard);
-  view('hub');
+  renderRank();view('hub');
 }
 let mode='in';
 function setMode(m){mode=m;$('#tin').className=m==='in'?'':'ghost';$('#tup').className=m==='up'?'':'ghost';$('#biow').classList.toggle('hidden',m==='in');$('#go').textContent=m==='in'?'Sign in':'Create account';$('#err').textContent=''}
@@ -1582,6 +1603,14 @@ function setUnread(n){unN=n;paint()}
 /* scores */
 end=function(g,s){if(s>(best[g]||0)){best[g]=s;if(tok)api('best',{game:g,score:s}).catch(()=>{})}};
 
+/* God Mode is decided by the shared leaderboard */
+const hub0=showHub;
+showHub=function(){
+  hub0();
+  const who=user&&user.name;
+  if(tok&&who)api('rank').then(j=>{if(!user||user.name!==who)return;godName=j.god?who:null;renderRank()}).catch(()=>{});
+};
+
 /* sign in / sign up / out */
 authGo=async function(){
   const er=$('#err');
@@ -1593,7 +1622,7 @@ authGo=async function(){
 };
 $('#go').onclick=authGo;
 $('#pw').onkeydown=e=>{if(e.key==='Enter')authGo()};
-$('#out').onclick=()=>{unsubOnLogout(tok);if(state!=='idle')endCall(null,true);lost();setBadge(0);setUnread(0);setGU(0);user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
+$('#out').onclick=()=>{godName=null;unsubOnLogout(tok);if(state!=='idle')endCall(null,true);lost();setBadge(0);setUnread(0);setGU(0);user=null;acct=null;best={};isOwner=false;$('#un').value='';$('#pw').value='';$('#bio').value='';setMode('in');view('login')};
 
 /* bio (saved to the server a moment after typing stops) */
 const rs=renderSet;

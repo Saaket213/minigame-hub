@@ -222,6 +222,11 @@ async function route(req, res, url) {
   if (!u) throw new E(401, 'Please sign in again.');
 
   if (p === '/api/me') return send(res, 200, { me: me(u) });
+  if (p === '/api/rank') {   // God Mode = nobody has a higher score than you in any game
+    const games = ['parkour', 'ttt', 'blocks', 'snake', 'memory', 'g2048', 'flappy', 'mole', 'reaction', 'breakout', 'pong', 'simon', 'math', 'dodge', 'jet', 'football', 'basketball', 'volley', 'penalty', 'cricket', 'badminton'];
+    const all = Object.values(db.users);
+    return send(res, 200, { god: games.every(g => u.best[g] > 0 && !all.some(x => x.best[g] > u.best[g])) });
+  }
   if (p === '/api/best') {
     const g = String(b.game || '').slice(0, 20), s = Number(b.score);
     if (!g || !Number.isFinite(s) || s < 0 || s > 1e7) throw new E(400, 'Bad score');
